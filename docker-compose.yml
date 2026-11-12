@@ -1,0 +1,130 @@
+services:
+  # ═══════════════════════════════════════════════════════════════
+  #  Infrastructure
+  # ═══════════════════════════════════════════════════════════════
+  postgres:
+    image: postgres:17-alpine
+    container_name: velostream-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-velostream}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-velostream_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-velostream}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - velostream_pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-velostream} -d ${POSTGRES_DB:-velostream}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  mediamtx:
+    build:
+      context: ./infra/mediamtx
+      dockerfile: Dockerfile
+    container_name: velostream-mediamtx
+    restart: unless-stopped
+    environment:
+      MEDIA_WEBHOOK_SECRET: ${MEDIA_WEBHOOK_SECRET:-dev_mediamtx_webhook_secret_change_me}
+    ports:
+      - "1935:1935"
+      - "8888:8888"
+      - "8889:8889"
+      - "8189:8189/udp"
+      - "127.0.0.1:9997:9997"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: [ "CMD", "curl", "-fsS", "http://127.0.0.1:9997/v3/config/global/get" ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 5s
+
+  # ═══════════════════════════════════════════════════════════════
+  #  Application Services
+  # ═══════════════════════════════════════════════════════════════
+  fastify:
+    build:
+      context: .
+      dockerfile: backend/fastify/Dockerfile
+    container_name: velostream-fastify
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      FASTIFY_PORT: "3001"
+      PORT: "3001"
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-velostream}:${POSTGRES_PASSWORD:-velostream_dev_password}@postgres:5432/${POSTGRES_DB:-velostream}?schema=public
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-EdDSA}
+      JWT_ISSUER: ${JWT_ISSUER:-velostream-fastify}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-velostream-clients}
+      JWT_PRIVATE_KEY_PATH: /app/.keys/jwt-private.pem
+      JWT_PUBLIC_KEY_PATH: /app/.keys/jwt-public.pem
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+      JWT_REFRESH_TTL_DAYS: ${JWT_REFRESH_TTL_DAYS:-30}
+      MEDIA_WEBHOOK_SECRET: ${MEDIA_WEBHOOK_SECRET:-dev_mediamtx_webhook_secret_change_me}
+      CLOUDINARY_URL: ${CLOUDINARY_URL:-}
+      CLOUDINARY_AVATAR_FOLDER: ${CLOUDINARY_AVATAR_FOLDER:-VeloStream/avatar}
+    volumes:
+      - ./.keys:/app/.keys:ro
+    ports:
+      - "3001:3001"
+    healthcheck:
+      test: [ "CMD", "wget", "--spider", "-q", "http://127.0.0.1:3001/docs/json" ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  fiber:
+    build:
+      context: ./backend/fiber
+      dockerfile: Dockerfile
+    container_name: velostream-fiber
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      FIBER_PORT: "3002"
+      PORT: "3002"
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-velostream}:${POSTGRES_PASSWORD:-velostream_dev_password}@postgres:5432/${POSTGRES_DB:-velostream}?schema=public
+      JWT_ISSUER: ${JWT_ISSUER:-velostream-fastify}
+      JWT_PUBLIC_KEY_PATH: /app/.keys/jwt-public.pem
+      MEDIA_WEBHOOK_SECRET: ${MEDIA_WEBHOOK_SECRET:-dev_mediamtx_webhook_secret_change_me}
+    volumes:
+      - ./.keys:/app/.keys:ro
+    ports:
+      - "3002:3002"
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "127.0.0.1", "3002" ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: velostream-frontend
+    restart: unless-stopped
+    depends_on:
+      fastify:
+        condition: service_healthy
+      fiber:
+        condition: service_healthy
+    ports:
+      - "80:80"
+
+volumes:
+  velostream_pgdata:

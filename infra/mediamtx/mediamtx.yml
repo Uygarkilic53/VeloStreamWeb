@@ -1,0 +1,45 @@
+# VeloStream MediaMTX Configuration
+logLevel: info
+logDestinations: [stdout]
+
+# Control API (bound to localhost in docker-compose.yml for health/inspection)
+api: yes
+apiAddress: :9997
+
+# Authenticate publish actions against Go Fiber service; allow public HLS/WebRTC reads & local API healthcheck
+authMethod: http
+authHTTPAddress: http://host.docker.internal:3002/webhooks/mediamtx/auth
+authHTTPExclude:
+  - action: read
+  - action: playback
+  - action: api
+  - action: metrics
+  - action: pprof
+
+# RTMP ingest (OBS Studio / desktop encoders)
+rtmp: yes
+rtmpAddress: :1935
+
+# HLS / Low-Latency HLS playback
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsAllowOrigin: "*"
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+
+# WebRTC (WHIP browser broadcast ingest + WHEP low-latency playback)
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigin: "*"
+webrtcLocalUDPAddress: :8189
+
+# Stream lifecycle webhook hooks
+paths:
+  all_others:
+    runOnReady: >
+      sh -c 'curl -fsS -X POST "http://host.docker.internal:3002/webhooks/mediamtx/event" -H "Content-Type: application/json" -H "X-VeloStream-Webhook-Secret: ${MEDIA_WEBHOOK_SECRET}" -d "{\"event\":\"stream.ready\",\"path\":\"$MTX_PATH\",\"sourceType\":\"$MTX_SOURCE_TYPE\"}" || true'
+    runOnNotReady: >
+      sh -c 'curl -fsS -X POST "http://host.docker.internal:3002/webhooks/mediamtx/event" -H "Content-Type: application/json" -H "X-VeloStream-Webhook-Secret: ${MEDIA_WEBHOOK_SECRET}" -d "{\"event\":\"stream.not_ready\",\"path\":\"$MTX_PATH\",\"sourceType\":\"$MTX_SOURCE_TYPE\"}" || true'
+

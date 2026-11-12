@@ -1,0 +1,177 @@
+package tests
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/velostream/fiber/app"
+	"github.com/velostream/fiber/controllers"
+	"github.com/velostream/fiber/services"
+)
+
+func TestCORSMiddlewareAndRemovedHealthRoute(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := services.NewHubService()
+	go h.Run(ctx)
+
+	fiberApp := app.New(app.Options{
+		CorsOrigin: "http://localhost:5173",
+		Hub:        h,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	resp, err := fiberApp.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test /healthz: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 after removing /healthz, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
+		t.Fatalf("expected CORS header http://localhost:5173, got %q", got)
+	}
+}
+
+func TestMediaMTXWebhooks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := services.NewHubService()
+	go h.Run(ctx)
+
+	client := services.NewClient("creator_1", "usr_1", "viewer1")
+	h.Register(client)
+	defer h.Unregister(client)
+
+	fiberApp := app.New(app.Options{
+		Hub:                h,
+		MediaWebhookSecret: "top-secret-webhook",
+	})
+
+	// Reject spoofed event without valid secret header.
+	body := []byte(`{"event":"stream.ready","path":"creator_1","sourceType":"whip"}`)
+	unauthReq := httptest.NewRequest(http.MethodPost, "/webhooks/mediamtx/event", bytes.NewReader(body))
+	unauthReq.Header.Set("Content-Type", "application/json")
+	unauthResp, err := fiberApp.Test(unauthReq)
+	if err != nil {
+		t.Fatalf("unauth webhook test: %v", err)
+	}
+	if unauthResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for missing secret, got %d", unauthResp.StatusCode)
+	}
+
+	// Accept valid event with secret header and broadcast to room.
+	authReq := httptest.NewRequest(http.MethodPost, "/webhooks/mediamtx/event", bytes.NewReader(body))
+	authReq.Header.Set("Content-Type", "application/json")
+	authReq.Header.Set(controllers.WebhookSecretHeader, "top-secret-webhook")
+	authResp, err := fiberApp.Test(authReq)
+	if err != nil {
+		t.Fatalf("auth webhook test: %v", err)
+	}
+	if authResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for valid webhook, got %d", authResp.StatusCode)
+	}
+
+	var parsed map[string]any
+	if err := json.NewDecoder(authResp.Body).Decode(&parsed); err != nil {
+		t.Fatalf("decode webhook response: %v", err)
+	}
+	if parsed["status"] != "live" {
+		t.Fatalf("expected status live, got %v", parsed["status"])
+	}
+
+	select {
+	case msg := <-client.Send:
+		if len(msg) == 0 {
+			t.Fatal("expected stream.status frame broadcast to connected client")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for stream.status broadcast")
+	}
+
+	// Publish auth without credentials must fail.
+	pubReq := httptest.NewRequest(
+		http.MethodPost,
+		"/webhooks/mediamtx/auth",
+		bytes.NewReader([]byte(`{"action":"publish","path":"creator_1"}`)),
+	)
+	pubReq.Header.Set("Content-Type", "application/json")
+	pubResp, err := fiberApp.Test(pubReq)
+	if err != nil {
+		t.Fatalf("publish auth test: %v", err)
+	}
+	if pubResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for unauthenticated publish, got %d", pubResp.StatusCode)
+	}
+}
+
+func TestWebSocketRouteUpgradeAndAuth(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := services.NewHubService()
+	go h.Run(ctx)
+
+	unconfiguredApp := app.New(app.Options{Hub: h})
+
+	// Non-WebSocket request returns 426 Upgrade Required.
+	resp, err := unconfiguredApp.Test(httptest.NewRequest(http.MethodGet, "/ws/chat/ch_1", nil))
+	if err != nil {
+		t.Fatalf("ws non-upgrade test: %v", err)
+	}
+	if resp.StatusCode != http.StatusUpgradeRequired {
+		t.Fatalf("expected 426 Upgrade Required, got %d", resp.StatusCode)
+	}
+
+	// WebSocket upgrade without configured JWT service returns 503 AUTH_UNCONFIGURED.
+	upgradeReq := httptest.NewRequest(http.MethodGet, "/ws/chat/ch_1", nil)
+	upgradeReq.Header.Set("Connection", "Upgrade")
+	upgradeReq.Header.Set("Upgrade", "websocket")
+	upgradeReq.Header.Set("Sec-WebSocket-Version", "13")
+	upgradeReq.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	resp503, err := unconfiguredApp.Test(upgradeReq)
+	if err != nil {
+		t.Fatalf("ws unconfigured auth test: %v", err)
+	}
+	if resp503.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 AUTH_UNCONFIGURED, got %d", resp503.StatusCode)
+	}
+
+	// WebSocket upgrade with invalid JWT returns 401 Unauthorized.
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	jwtSvc, err := services.NewJwtServiceFromPEM(pubPEM, "velostream-fastify", "velostream-clients")
+	if err != nil {
+		t.Fatalf("new jwt service: %v", err)
+	}
+
+	authedApp := app.New(app.Options{Hub: h, JwtService: jwtSvc})
+	badTokenReq := httptest.NewRequest(http.MethodGet, "/ws/chat/ch_1?token=invalid.jwt.token", nil)
+	badTokenReq.Header.Set("Connection", "Upgrade")
+	badTokenReq.Header.Set("Upgrade", "websocket")
+	badTokenReq.Header.Set("Sec-WebSocket-Version", "13")
+	badTokenReq.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	resp401, err := authedApp.Test(badTokenReq)
+	if err != nil {
+		t.Fatalf("ws invalid token test: %v", err)
+	}
+	if resp401.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %d", resp401.StatusCode)
+	}
+}

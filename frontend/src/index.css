@@ -1,0 +1,97 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+  --vs-canvas: #F6F8FA;
+  --vs-surface: #FFFFFF;
+  --vs-surface-subtle: #EAEFF5;
+  --vs-surface-hover: #E2E8F0;
+  --vs-border: #D8E0EA;
+  --vs-text: #11161E;
+  --vs-text-muted: #5A6678;
+  --vs-accent: #2563EB;
+  --vs-accent-hover: #1D4ED8;
+  --vs-accent-soft: #DBEAFE;
+  --vs-live: #E11D48;
+  --vs-ok: #059669;
+  --font-display: "Plus Jakarta Sans", "Segoe UI Variable Display", "Inter", system-ui, -apple-system, sans-serif;
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+.dark {
+  color-scheme: dark;
+  --vs-canvas: #0E1116;
+  --vs-surface: #151A22;
+  --vs-surface-subtle: #1D2430;
+  --vs-surface-hover: #252D3B;
+  --vs-border: #27303E;
+  --vs-text: #F3F5F8;
+  --vs-text-muted: #96A2B4;
+  --vs-accent: #3B82F6;
+  --vs-accent-hover: #2563EB;
+  --vs-accent-soft: #172554;
+  --vs-live: #EF4444;
+  --vs-ok: #10B981;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--vs-canvas);
+  color: var(--vs-text);
+}
+
+h1, h2, h3, .font-display {
+  font-family: var(--font-display);
+}
+
+code, pre, .font-mono {
+  font-family: var(--font-mono);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.Toastify__toast-container {
+  --toastify-color-light: var(--vs-surface);
+  --toastify-color-dark: var(--vs-surface);
+  --toastify-text-color-light: var(--vs-text);
+  --toastify-text-color-dark: var(--vs-text);
+  --toastify-color-info: var(--vs-accent);
+  --toastify-color-success: var(--vs-ok);
+  --toastify-color-error: var(--vs-live);
+  --toastify-font-family: var(--font-sans);
+}
+
+.Toastify__toast {
+  border: 1px solid var(--vs-border);
+  border-radius: 0.75rem;
+  background-color: var(--vs-surface);
+  color: var(--vs-text);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.4;
+  box-shadow: 0 10px 25px -10px rgba(15, 23, 42, 0.22);
+}
+
+.Toastify__close-button {
+  color: var(--vs-text-muted);
+  opacity: 0.8;
+}
+
+.Toastify__close-button:hover {
+  color: var(--vs-text);
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

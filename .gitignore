@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.*
+
+# Build outputs
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Go binaries & artifacts
+backend/fiber/bin/
+backend/fiber/fiber
+backend/fiber/*.exe
+*.test
+*.out
+
+# Environment & local secrets
+.env
+.env.local
+.env.*.local
+.keys/
+*.pem
+*.key
+
+# Testing & Playwright
+frontend/playwright-report/
+frontend/test-results/
+frontend/blob-report/
+playwright/.cache/
+
+# Logs & OS files
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+.agents

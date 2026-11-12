@@ -1,0 +1,125 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String          @id @default(cuid())
+  username      String          @unique
+  displayName   String          @map("display_name")
+  email         String          @unique
+  bio           String          @default("")
+  avatarUrl     String?         @map("avatar_url")
+  passwordHash  String          @map("password_hash")
+  role          UserRole        @default(USER)
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+  channel       Channel?
+  refreshTokens RefreshToken[]
+  follows       ChannelFollow[]
+  messages      ChatMessage[]
+  bansReceived  ChannelBan[]    @relation("BannedUser")
+  bansIssued    ChannelBan[]    @relation("BanModerator")
+
+  @@map("users")
+}
+
+enum UserRole {
+  USER
+  CREATOR
+  MODERATOR
+  ADMIN
+}
+
+model Channel {
+  id           String          @id @default(cuid())
+  ownerId      String          @unique @map("owner_id")
+  slug         String          @unique
+  title        String
+  category     String          @default("Programming")
+  streamKey    String          @unique @map("stream_key")
+  slowMode     Boolean         @default(false) @map("slow_mode")
+  isLive       Boolean         @default(false) @map("is_live")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+  owner        User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  sessions     StreamSession[]
+  chatMessages ChatMessage[]
+  bans         ChannelBan[]
+
+  @@index([isLive])
+  @@map("channels")
+}
+
+model RefreshToken {
+  id         String    @id @default(cuid())
+  userId     String    @map("user_id")
+  tokenHash  String    @unique @map("token_hash")
+  rememberMe Boolean   @default(true) @map("remember_me")
+  expiresAt  DateTime  @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model ChannelFollow {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  channelSlug String   @map("channel_slug")
+  createdAt   DateTime @default(now()) @map("created_at")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channelSlug])
+  @@index([channelSlug])
+  @@map("channel_follows")
+}
+
+model StreamSession {
+  id         String    @id @default(cuid())
+  channelId  String    @map("channel_id")
+  startedAt  DateTime  @default(now()) @map("started_at")
+  endedAt    DateTime? @map("ended_at")
+  peakViewer Int       @default(0) @map("peak_viewer")
+  channel    Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, startedAt])
+  @@map("stream_sessions")
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  channelId String   @map("channel_id")
+  userId    String   @map("user_id")
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, createdAt])
+  @@map("chat_messages")
+}
+
+model ChannelBan {
+  id        String    @id @default(cuid())
+  channelId String    @map("channel_id")
+  userId    String    @map("user_id")
+  issuedBy  String    @map("issued_by")
+  reason    String
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User      @relation("BannedUser", fields: [userId], references: [id], onDelete: Cascade)
+  moderator User      @relation("BanModerator", fields: [issuedBy], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([channelId, expiresAt])
+  @@map("channel_bans")
+}

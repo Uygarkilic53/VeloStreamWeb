@@ -1,0 +1,41 @@
+{
+  "name": "velostream",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VeloStream high-concurrency polyglot live streaming platform",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "workspaces": [
+    "backend/fastify",
+    "frontend"
+  ],
+  "scripts": {
+    "keys:generate": "node infra/scripts/generate-keys.mjs",
+    "up": "docker compose up -d --build",
+    "up:fresh": "docker compose up -d --build --force-recreate",
+    "down": "docker compose down",
+    "down:clean": "docker compose down -v",
+    "restart": "docker compose down && docker compose up -d --build",
+    "logs": "docker compose logs -f",
+    "ps": "docker compose ps",
+    "infra:up": "docker compose up -d postgres mediamtx",
+    "infra:down": "docker compose down",
+    "infra:config": "docker compose config -q",
+    "dev:fastify": "npm run dev -w @velostream/fastify",
+    "dev:frontend": "npm run dev -w @velostream/frontend",
+    "typecheck": "npm run typecheck -w @velostream/fastify && npm run typecheck -w @velostream/frontend",
+    "lint": "npm run lint -w @velostream/fastify && npm run lint -w @velostream/frontend",
+    "test": "npm run test -w @velostream/fastify && npm run test -w @velostream/frontend",
+    "build": "npm run build -w @velostream/fastify && npm run build -w @velostream/frontend",
+    "verify:all": "node infra/scripts/verify-all.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.24.0",
+    "eslint": "^9.24.0",
+    "globals": "^16.0.0",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.29.0"
+  }
+}
