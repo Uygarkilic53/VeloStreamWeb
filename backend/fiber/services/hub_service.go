@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	"github.com/velostream/fiber/models"
 )
@@ -48,15 +49,40 @@ type hubEvent struct {
 
 // HubService manages WebSocket rooms and client connections inside a single actor goroutine.
 type HubService struct {
-	events chan hubEvent
-	done   chan struct{}
+	events    chan hubEvent
+	done      chan struct{}
+	snapMu    sync.RWMutex
+	snapshots map[string][]byte
 }
 
 func NewHubService() *HubService {
 	return &HubService{
-		events: make(chan hubEvent, 256),
-		done:   make(chan struct{}),
+		events:    make(chan hubEvent, 256),
+		done:      make(chan struct{}),
+		snapshots: make(map[string][]byte),
 	}
+}
+
+func (h *HubService) SaveSnapshot(channelID string, frameBytes []byte) {
+	h.snapMu.Lock()
+	defer h.snapMu.Unlock()
+	h.snapshots[channelID] = frameBytes
+}
+
+func (h *HubService) DeleteSnapshot(channelID string) {
+	h.snapMu.Lock()
+	defer h.snapMu.Unlock()
+	delete(h.snapshots, channelID)
+}
+
+func (h *HubService) GetAllSnapshots() [][]byte {
+	h.snapMu.RLock()
+	defer h.snapMu.RUnlock()
+	res := make([][]byte, 0, len(h.snapshots))
+	for _, snap := range h.snapshots {
+		res = append(res, snap)
+	}
+	return res
 }
 
 func (h *HubService) Run(ctx context.Context) {

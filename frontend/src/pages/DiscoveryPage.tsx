@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "react-toastify";
 import {
   BroadcastIcon,
   CategoryIcon,
+  CompassIcon,
   HeartIcon,
   PlayIcon,
   SearchXIcon,
@@ -11,25 +12,35 @@ import {
 import type { AppRoute } from "../components/Navbar";
 import { StreamThumbnail } from "../components/StreamThumbnail";
 import { UserAvatar } from "../components/UserAvatar";
+import { LoadingSpinner } from "../components/LoadingSpinner";
 import { useAuth, type StreamCategory } from "../lib/auth";
+import { useStreamSnapshot } from "../lib/snapshots";
 import {
   formatViewerCount,
   STREAM_CATEGORIES,
   type StreamDirectoryItem,
 } from "../lib/streams";
-import type { DirectorySearchResult, DirectoryUserMatch } from "../lib/users";
+import {
+  fetchFollowedUsersApi,
+  type DirectorySearchResult,
+  type DirectoryUserMatch,
+  type PublicUserSummary,
+} from "../lib/users";
 
 interface DiscoveryPageProps {
   streams: readonly StreamDirectoryItem[];
   activeCategory: "All Live" | StreamCategory;
   onSelectCategory: (category: "All Live" | StreamCategory) => void;
   searchQuery: string;
-  onSearchChange?: (value: string) => void;
+  onSearchChange?: ((value: string) => void) | undefined;
   onClearSearch: () => void;
-  searchResults?: DirectorySearchResult;
-  onSelectUser?: (user: DirectoryUserMatch) => void;
+  searchResults?: DirectorySearchResult | undefined;
+  onSelectUser?: ((user: DirectoryUserMatch) => void) | undefined;
   onlyFollowing: boolean;
   onNavigate: (route: AppRoute) => void;
+  isLoading?: boolean | undefined;
+  hlsBaseUrl?: string | undefined;
+  whepBaseUrl?: string | undefined;
 }
 
 type SortOption = "viewers" | "title";
@@ -45,15 +56,29 @@ const GROUPED_CATEGORY_ORDER: readonly StreamCategory[] = [
 function StreamCard({
   stream,
   onWatch,
+  hlsBaseUrl = "http://localhost:8888",
+  whepBaseUrl,
 }: {
   stream: StreamDirectoryItem;
   onWatch: (slug: string) => void;
+  hlsBaseUrl?: string | undefined;
+  whepBaseUrl?: string | undefined;
 }) {
+  const [isHovered, setIsHovered] = useState(false);
+  const snapshotUrl = useStreamSnapshot(stream.slug, hlsBaseUrl, stream.isLive, whepBaseUrl);
+
   return (
-    <article className="group flex flex-col overflow-hidden rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] transition-colors hover:border-[var(--vs-accent)]">
+    <article
+      data-testid={`stream-card-${stream.slug}`}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      className="group flex flex-col overflow-hidden rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] transition-colors hover:border-[var(--vs-accent)]"
+    >
       <button
         type="button"
         onClick={() => onWatch(stream.slug)}
+        onFocus={() => setIsHovered(true)}
+        onBlur={() => setIsHovered(false)}
         className="text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vs-accent)]"
       >
         <div className="p-3 pb-0">
@@ -62,6 +87,11 @@ function StreamCard({
             viewerCount={stream.viewerCount}
             quality={stream.quality}
             isLive={stream.isLive}
+            snapshotUrl={snapshotUrl}
+            slug={stream.slug}
+            hlsBaseUrl={hlsBaseUrl}
+            whepBaseUrl={whepBaseUrl}
+            isHovered={isHovered}
           />
         </div>
         <div className="flex items-start gap-3.5 p-4">
@@ -89,12 +119,9 @@ function StreamCard({
             <p className="truncate text-xs text-[var(--vs-text-muted)]">
               @{stream.slug} · {stream.subCategory}
             </p>
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <div className="flex flex-wrap items-center gap-2 pt-1">
               <span className="rounded-md border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-2 py-0.5 text-[11px] font-medium text-[var(--vs-text-muted)]">
                 {stream.category}
-              </span>
-              <span className="font-mono text-[11px] text-[var(--vs-text-muted)]">
-                {stream.ingestProtocol}
               </span>
             </div>
           </div>
@@ -115,10 +142,80 @@ export function DiscoveryPage({
   onSelectUser,
   onlyFollowing,
   onNavigate,
+  isLoading = false,
+  hlsBaseUrl = "http://localhost:8888",
+  whepBaseUrl,
 }: DiscoveryPageProps) {
   const { user, toggleFollow } = useAuth();
   const [sortBy, setSortBy] = useState<SortOption>("viewers");
+  const [followedUsers, setFollowedUsers] = useState<PublicUserSummary[]>([]);
+  const [isLoadingFollowed, setIsLoadingFollowed] = useState(false);
+  const [isFeaturedHovered, setIsFeaturedHovered] = useState(false);
   const isSearchActive = searchQuery.trim().length > 0;
+
+  useEffect(() => {
+    if (!onlyFollowing || !user) {
+      setFollowedUsers([]);
+      return;
+    }
+
+    if (user.followedSlugs.length === 0) {
+      setFollowedUsers([]);
+      return;
+    }
+
+    let isMounted = true;
+    const controller = new AbortController();
+
+    if (user.accessToken) {
+      setIsLoadingFollowed(true);
+      void fetchFollowedUsersApi(user.accessToken, controller.signal)
+        .then((data) => {
+          if (isMounted) {
+            setFollowedUsers(data);
+          }
+        })
+        .finally(() => {
+          if (isMounted) {
+            setIsLoadingFollowed(false);
+          }
+        });
+    } else {
+      const previewFollowed: PublicUserSummary[] = user.followedSlugs.map((slug) => {
+        const liveMatch = streams.find((s) => s.slug.toLowerCase() === slug.toLowerCase());
+        return {
+          id: `usr_${slug}`,
+          username: slug,
+          displayName: liveMatch?.displayName ?? slug,
+          avatarUrl: liveMatch?.avatarUrl ?? null,
+          bio: liveMatch?.bio ?? "",
+          isLive: Boolean(liveMatch),
+          channelTitle: liveMatch?.title ?? `${slug}'s channel`,
+          channelCategory: liveMatch?.category ?? "Programming",
+        };
+      });
+      setFollowedUsers(previewFollowed);
+    }
+
+    return () => {
+      isMounted = false;
+      controller.abort();
+    };
+  }, [onlyFollowing, streams, user]);
+
+  const handleToggleFollow = async (slug: string) => {
+    const isCurrentlyFollowing =
+      user?.followedSlugs.some((s) => s.toLowerCase() === slug.toLowerCase()) ?? false;
+    const result = await toggleFollow(slug);
+    if (!result.ok) {
+      toast.error(result.error ?? "Could not update follow status.");
+      return;
+    }
+    toast.success(
+      result.message ??
+        (isCurrentlyFollowing ? `Unfollowed @${slug}.` : `Followed @${slug}.`),
+    );
+  };
 
   const featuredStream = useMemo(
     () => streams.find((s) => s.featured) ?? streams[0],
@@ -127,10 +224,10 @@ export function DiscoveryPage({
 
   const filteredStreams = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    const followedSet = new Set(user?.followedSlugs ?? []);
+    const followedSet = new Set((user?.followedSlugs ?? []).map((s) => s.toLowerCase()));
 
     const matches = streams.filter((stream) => {
-      if (onlyFollowing && !followedSet.has(stream.slug)) {
+      if (onlyFollowing && !followedSet.has(stream.slug.toLowerCase())) {
         return false;
       }
       if (activeCategory !== "All Live" && stream.category !== activeCategory) {
@@ -156,10 +253,19 @@ export function DiscoveryPage({
   }, [filteredStreams]);
 
   const showSpotlight =
-    !onlyFollowing && activeCategory === "All Live" && !isSearchActive && featuredStream;
-  const showGrouped = !onlyFollowing && activeCategory === "All Live" && !isSearchActive;
+    !isLoading && !onlyFollowing && activeCategory === "All Live" && !isSearchActive && featuredStream;
+  const showGrouped = !isLoading && !onlyFollowing && activeCategory === "All Live" && !isSearchActive;
+  const featuredSnapshotUrl = useStreamSnapshot(
+    featuredStream?.slug ?? "",
+    hlsBaseUrl,
+    featuredStream?.isLive ?? false,
+  );
   const isFollowingFeatured =
-    featuredStream && user ? user.followedSlugs.includes(featuredStream.slug) : false;
+    featuredStream && user
+      ? user.followedSlugs.some(
+          (slug) => slug.toLowerCase() === featuredStream.slug.toLowerCase(),
+        )
+      : false;
 
   const matchedUsers = searchResults?.matchedUsers ?? [];
   const relatedLiveStreams = useMemo(() => {
@@ -232,7 +338,12 @@ export function DiscoveryPage({
         >
           <button
             type="button"
+            data-testid="featured-stream-thumbnail-button"
             onClick={() => onNavigate({ page: "watch", slug: featuredStream.slug })}
+            onMouseEnter={() => setIsFeaturedHovered(true)}
+            onMouseLeave={() => setIsFeaturedHovered(false)}
+            onFocus={() => setIsFeaturedHovered(true)}
+            onBlur={() => setIsFeaturedHovered(false)}
             className="text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vs-accent)]"
           >
             <StreamThumbnail
@@ -240,6 +351,11 @@ export function DiscoveryPage({
               viewerCount={featuredStream.viewerCount}
               quality={featuredStream.quality}
               isLive={featuredStream.isLive}
+              snapshotUrl={featuredSnapshotUrl}
+              slug={featuredStream.slug}
+              hlsBaseUrl={hlsBaseUrl}
+              whepBaseUrl={whepBaseUrl}
+              isHovered={isFeaturedHovered}
             />
           </button>
 
@@ -341,10 +457,17 @@ export function DiscoveryPage({
           aria-label="Stream categories"
         >
           {STREAM_CATEGORIES.map((category) => {
+            const streamPool = onlyFollowing
+              ? streams.filter((s) =>
+                  (user?.followedSlugs ?? []).some(
+                    (slug) => slug.toLowerCase() === s.slug.toLowerCase(),
+                  ),
+                )
+              : streams;
             const count =
               category === "All Live"
-                ? streams.length
-                : streams.filter((s) => s.category === category).length;
+                ? streamPool.length
+                : streamPool.filter((s) => s.category === category).length;
             const active = activeCategory === category;
             return (
               <button
@@ -485,12 +608,238 @@ export function DiscoveryPage({
                   <StreamCard
                     key={stream.id}
                     stream={stream}
+                    hlsBaseUrl={hlsBaseUrl}
+                    whepBaseUrl={whepBaseUrl}
                     onWatch={(slug) => onNavigate({ page: "watch", slug })}
                   />
                 ))}
               </div>
             )}
           </section>
+        </div>
+      ) : onlyFollowing ? (
+        !user ? (
+          <div className="rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-8 text-center sm:p-12">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] text-[var(--vs-accent)]">
+              <HeartIcon className="h-6 w-6" />
+            </div>
+            <h2 className="font-display text-lg font-bold text-[var(--vs-text)]">
+              Follow your favorite creators
+            </h2>
+            <p className="mx-auto mt-1 max-w-md text-sm text-[var(--vs-text-muted)]">
+              Sign in to follow channels and catch every broadcast as soon as they go live.
+            </p>
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => onNavigate({ page: "signin" })}
+                className="rounded-lg bg-[var(--vs-accent)] px-4 py-2 text-xs font-semibold text-white hover:bg-[var(--vs-accent-hover)]"
+              >
+                Sign in
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate({ page: "home" })}
+                className="rounded-lg border border-[var(--vs-border)] bg-[var(--vs-canvas)] px-4 py-2 text-xs font-semibold text-[var(--vs-text)] hover:bg-[var(--vs-surface-subtle)]"
+              >
+                Browse live channels
+              </button>
+            </div>
+          </div>
+        ) : user.followedSlugs.length === 0 && followedUsers.length === 0 ? (
+          <div className="rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-8 text-center sm:p-12">
+            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] text-[var(--vs-accent)]">
+              <UsersIcon className="h-6 w-6" />
+            </div>
+            <h2 className="font-display text-lg font-bold text-[var(--vs-text)]">
+              You are not following any channels yet
+            </h2>
+            <p className="mx-auto mt-1 max-w-md text-sm text-[var(--vs-text-muted)]">
+              Browse live broadcasts on the home page and follow creators to see them here.
+            </p>
+            <button
+              type="button"
+              onClick={() => onNavigate({ page: "home" })}
+              className="mt-5 inline-flex items-center gap-2 rounded-lg bg-[var(--vs-accent)] px-4 py-2 text-xs font-semibold text-white hover:bg-[var(--vs-accent-hover)]"
+            >
+              <CompassIcon className="h-4 w-4" />
+              <span>Discover creators</span>
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-8">
+            <section aria-label="Followed live streams" className="space-y-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="flex h-2.5 w-2.5 rounded-full bg-[var(--vs-live)] animate-pulse" />
+                  <h2 className="font-display text-lg font-bold tracking-tight text-[var(--vs-text)]">
+                    Live now
+                  </h2>
+                  <span className="rounded-md border border-[var(--vs-border)] bg-[var(--vs-surface)] px-2 py-0.5 text-xs font-medium text-[var(--vs-text-muted)] tabular-nums">
+                    {filteredStreams.length}
+                  </span>
+                </div>
+              </div>
+
+              {filteredStreams.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-[var(--vs-border)] bg-[var(--vs-surface-subtle)]/30 p-5 text-center text-xs text-[var(--vs-text-muted)]">
+                  None of your followed creators are streaming right now.
+                </div>
+              ) : (
+                <div className="grid gap-5 sm:grid-cols-2 lg:gap-6 xl:grid-cols-3">
+                  {filteredStreams.map((stream) => (
+                    <StreamCard
+                      key={stream.id}
+                      stream={stream}
+                      hlsBaseUrl={hlsBaseUrl}
+                      whepBaseUrl={whepBaseUrl}
+                      onWatch={(slug) => onNavigate({ page: "watch", slug })}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section aria-label="Followed creators directory" className="space-y-4 pt-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <UsersIcon className="h-4 w-4 text-[var(--vs-accent)]" />
+                  <h2 className="font-display text-lg font-bold tracking-tight text-[var(--vs-text)]">
+                    Followed channels ({followedUsers.length || user.followedSlugs.length})
+                  </h2>
+                </div>
+              </div>
+
+              {isLoadingFollowed ? (
+                <div className="rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-8 text-center">
+                  <LoadingSpinner label="Loading followed creators..." />
+                </div>
+              ) : (
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {followedUsers.map((creator) => {
+                    const isLive =
+                      streams.some(
+                        (s) => s.slug.toLowerCase() === creator.username.toLowerCase(),
+                      ) || creator.isLive;
+                    const isFollowingCreator =
+                      user?.followedSlugs.some(
+                        (s) => s.toLowerCase() === creator.username.toLowerCase(),
+                      ) ?? false;
+                    return (
+                      <article
+                        key={creator.id || creator.username}
+                        className="flex flex-col justify-between rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-4 transition-colors hover:border-[var(--vs-accent)]"
+                      >
+                        <div className="space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <UserAvatar
+                                size="md"
+                                displayName={creator.displayName}
+                                username={creator.username}
+                                avatarUrl={creator.avatarUrl}
+                              />
+                              <div className="min-w-0">
+                                <h3 className="truncate font-display text-sm font-semibold text-[var(--vs-text)]">
+                                  {creator.displayName}
+                                </h3>
+                                <p className="truncate text-xs text-[var(--vs-text-muted)]">
+                                  @{creator.username}
+                                </p>
+                              </div>
+                            </div>
+                            <span
+                              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                                isLive
+                                  ? "bg-[var(--vs-live)]/15 text-[var(--vs-live)]"
+                                  : "bg-[var(--vs-surface-subtle)] text-[var(--vs-text-muted)]"
+                              }`}
+                            >
+                              <span
+                                className={`h-1.5 w-1.5 rounded-full ${
+                                  isLive
+                                    ? "bg-[var(--vs-live)] animate-pulse"
+                                    : "bg-[var(--vs-text-muted)]/50"
+                                }`}
+                                aria-hidden="true"
+                              />
+                              <span>{isLive ? "Live" : "Offline"}</span>
+                            </span>
+                          </div>
+
+                          {creator.channelTitle && (
+                            <p className="line-clamp-2 text-xs text-[var(--vs-text)]">
+                              {creator.channelTitle}
+                            </p>
+                          )}
+
+                          {creator.channelCategory && (
+                            <span className="inline-block rounded-md border border-[var(--vs-border)] bg-[var(--vs-canvas)] px-2 py-0.5 text-[11px] font-medium text-[var(--vs-text-muted)]">
+                              {creator.channelCategory}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="mt-4 flex items-center justify-between gap-2 border-t border-[var(--vs-border)] pt-3">
+                          <button
+                            type="button"
+                            onClick={() => onNavigate({ page: "watch", slug: creator.username })}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--vs-border)] bg-[var(--vs-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--vs-text)] hover:bg-[var(--vs-surface-subtle)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vs-accent)]"
+                          >
+                            <PlayIcon className="h-3 w-3" />
+                            <span>{isLive ? "Watch stream" : "View channel"}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleFollow(creator.username)}
+                            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vs-accent)] ${
+                              isFollowingCreator
+                                ? "border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] text-[var(--vs-text)] hover:bg-[var(--vs-surface)]"
+                                : "border-transparent bg-[var(--vs-accent)] text-white hover:bg-[var(--vs-accent-hover)]"
+                            }`}
+                          >
+                            <HeartIcon
+                              className={`h-3 w-3 ${isFollowingCreator ? "fill-current text-[var(--vs-accent)]" : ""}`}
+                            />
+                            <span>{isFollowingCreator ? "Following" : "Follow"}</span>
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
+        )
+      ) : isLoading && !onlyFollowing ? (
+        <section
+          aria-label="Loading live broadcasts"
+          className="rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-12 text-center"
+        >
+          <LoadingSpinner label="Loading live broadcasts..." />
+        </section>
+      ) : !onlyFollowing && streams.length === 0 && !isSearchActive ? (
+        <div className="rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-12 text-center">
+          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] text-[var(--vs-accent)] shadow-sm">
+            <BroadcastIcon className="h-7 w-7" />
+          </div>
+          <h2 className="font-display text-xl font-bold tracking-tight text-[var(--vs-text)]">
+            No live broadcasts right now
+          </h2>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-[var(--vs-text-muted)]">
+            Nobody is currently streaming on VeloStream. Be the first to go live and start your broadcast!
+          </p>
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => onNavigate({ page: "studio" })}
+              className="inline-flex items-center gap-2 rounded-lg bg-[var(--vs-accent)] px-5 py-2.5 text-xs font-semibold text-white transition-colors hover:bg-[var(--vs-accent-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vs-accent)]"
+            >
+              <BroadcastIcon className="h-4 w-4" />
+              <span>Start streaming</span>
+            </button>
+          </div>
         </div>
       ) : filteredStreams.length === 0 ? (
         <div className="rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-8 text-center">
@@ -544,6 +893,8 @@ export function DiscoveryPage({
                   <StreamCard
                     key={stream.id}
                     stream={stream}
+                    hlsBaseUrl={hlsBaseUrl}
+                    whepBaseUrl={whepBaseUrl}
                     onWatch={(slug) => onNavigate({ page: "watch", slug })}
                   />
                 ))}
@@ -560,31 +911,13 @@ export function DiscoveryPage({
             <StreamCard
               key={stream.id}
               stream={stream}
+              hlsBaseUrl={hlsBaseUrl}
+              whepBaseUrl={whepBaseUrl}
               onWatch={(slug) => onNavigate({ page: "watch", slug })}
             />
           ))}
         </section>
       )}
-
-      <section className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-5">
-        <div className="max-w-2xl space-y-1">
-          <h2 className="font-display text-base font-bold text-[var(--vs-text)]">
-            Plain live streaming, zero monetization noise
-          </h2>
-          <p className="text-sm text-[var(--vs-text-muted)]">
-            No donation banners, no cheer bars, and no paywalled chat. Go live directly from your
-            browser over WebRTC WHIP or connect OBS via RTMP.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => onNavigate({ page: "studio" })}
-          className="inline-flex items-center gap-2 rounded-lg bg-[var(--vs-accent)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--vs-accent-hover)]"
-        >
-          <BroadcastIcon className="h-4 w-4" />
-          Start streaming
-        </button>
-      </section>
     </main>
   );
 }

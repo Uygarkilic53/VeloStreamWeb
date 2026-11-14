@@ -3,7 +3,7 @@ import { STREAM_CATEGORIES } from "../models/types.js";
 
 export const USERNAME_REGEX = /^[a-zA-Z0-9_]+$/;
 
-export const RESERVED_HANDLES = new Set([
+export const RESERVED_USERNAMES = new Set([
   "admin",
   "administrator",
   "root",
@@ -26,22 +26,18 @@ export const RESERVED_HANDLES = new Set([
 ]);
 
 export const usernameSchema = z
-  .string({ required_error: "Channel handle is required." })
+  .string({ required_error: "Username is required." })
   .trim()
-  .transform((val) => val.replace(/^@/, ""))
-  .pipe(
-    z
-      .string()
-      .min(3, "Channel handle must be at least 3 characters.")
-      .max(32, "Channel handle must be at most 32 characters.")
-      .regex(
-        USERNAME_REGEX,
-        "Channel handle may only contain letters, numbers, and underscores.",
-      )
-      .refine(
-        (val) => !RESERVED_HANDLES.has(val.toLowerCase()),
-        "That channel handle is reserved.",
-      ),
+  .min(1, "Username is required.")
+  .min(3, "Username must be at least 3 characters.")
+  .max(32, "Username must be at most 32 characters.")
+  .regex(
+    USERNAME_REGEX,
+    "Username may only contain letters, numbers, and underscores.",
+  )
+  .refine(
+    (val) => !RESERVED_USERNAMES.has(val.toLowerCase()),
+    "That username is reserved.",
   );
 
 export const emailSchema = z
@@ -164,6 +160,8 @@ export const avatarUrlSchema = z
     "Avatar URL must use http:// or https://.",
   );
 
+export const ThemeModeSchema = z.enum(["light", "dark"]);
+
 export const UpdateProfileBodySchema = z.object({
   displayName: displayNameSchema,
   username: usernameSchema,
@@ -174,6 +172,11 @@ export const UpdateProfileBodySchema = z.object({
     .max(500, "Channel bio must be at most 500 characters.")
     .default(""),
   avatarUrl: avatarUrlSchema.nullable().optional(),
+  theme: ThemeModeSchema.optional(),
+});
+
+export const UpdateThemeBodySchema = z.object({
+  theme: ThemeModeSchema,
 });
 
 export const StreamCategorySchema = z.enum(STREAM_CATEGORIES);
@@ -226,9 +229,9 @@ export const FollowSlugParamSchema = z.object({
     .pipe(
       z
         .string()
-        .min(3, "Channel slug must be at least 3 characters.")
-        .max(32, "Channel slug must be at most 32 characters.")
-        .regex(USERNAME_REGEX, "Invalid channel handle format."),
+        .min(3, "Username must be at least 3 characters.")
+        .max(32, "Username must be at most 32 characters.")
+        .regex(USERNAME_REGEX, "Invalid username format."),
     ),
 });
 
@@ -282,4 +285,8 @@ export const PublicUsernameParamSchema = z.object({
         .max(32, "Username must be at most 32 characters.")
         .regex(USERNAME_REGEX, "Invalid username format."),
     ),
+});
+
+export const SetChannelLiveBodySchema = z.object({
+  isLive: z.boolean({ required_error: "isLive boolean is required." }),
 });

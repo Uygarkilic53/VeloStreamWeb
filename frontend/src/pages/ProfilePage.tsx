@@ -20,7 +20,12 @@ import {
 import type { AppRoute } from "../components/Navbar";
 import { UserAvatar } from "../components/UserAvatar";
 import { useAuth, type StreamCategory } from "../lib/auth";
-import { STREAM_CATEGORIES, type FieldErrorMap } from "../lib/auth-schemas";
+import {
+  RESERVED_USERNAMES,
+  STREAM_CATEGORIES,
+  USERNAME_REGEX,
+  type FieldErrorMap,
+} from "../lib/auth-schemas";
 import { getFrontendEnv } from "../lib/env";
 import { useTheme } from "../lib/theme";
 
@@ -160,7 +165,7 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
     try {
       const result = await updateProfile({
         displayName: displayName.trim(),
-        username: username.trim().replace(/^@/, ""),
+        username: username.trim(),
         email: email.trim(),
         bio: bio.trim(),
       });
@@ -237,7 +242,7 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
       }
       toast.success(
         result.message ??
-          "Rotated stream key. Update your encoder before starting a new stream.",
+        "Rotated stream key. Update your encoder before starting a new stream.",
       );
     } finally {
       setIsRotatingKey(false);
@@ -308,6 +313,24 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
     }
   }
 
+  function clearProfileFieldError(field: string) {
+    setProfileErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  }
+
+  const trimmedUsername = username.trim();
+  const isReservedUsername =
+    trimmedUsername.length > 0 && RESERVED_USERNAMES.has(trimmedUsername.toLowerCase());
+  const isUsernameValid =
+    trimmedUsername.length >= 3 &&
+    trimmedUsername.length <= 32 &&
+    USERNAME_REGEX.test(trimmedUsername) &&
+    !isReservedUsername;
+
   const rtmpUrl = "rtmp://localhost:1935/live";
 
   return (
@@ -375,11 +398,10 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                   onClick={() => {
                     setActiveTab(id);
                   }}
-                  className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold transition-colors ${
-                    selected
-                      ? "bg-[var(--vs-accent-soft)] text-[var(--vs-accent)]"
-                      : "text-[var(--vs-text-muted)] hover:bg-[var(--vs-surface-subtle)] hover:text-[var(--vs-text)]"
-                  }`}
+                  className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold transition-colors ${selected
+                    ? "bg-[var(--vs-accent-soft)] text-[var(--vs-accent)]"
+                    : "text-[var(--vs-text-muted)] hover:bg-[var(--vs-surface-subtle)] hover:text-[var(--vs-text)]"
+                    }`}
                 >
                   <Icon className="h-3.5 w-3.5 shrink-0" />
                   <span>{label}</span>
@@ -389,11 +411,11 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
           </nav>
 
           <div className="rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-4">
-            <p className="text-xs font-semibold text-[var(--vs-text)]">Cookie persistence</p>
+            <p className="text-xs font-semibold text-[var(--vs-text)]">Cookie settings</p>
             <p className="mt-1 text-xs leading-relaxed text-[var(--vs-text-muted)]">
               {cookiesAccepted
-                ? "Theme preference is stored in velostream_theme and stays active even when signed out."
-                : "Essential preference cookies are not yet accepted."}
+                ? "Essential first-party cookies are accepted."
+                : "Essential cookies are not yet accepted."}
             </p>
             <button
               type="button"
@@ -441,9 +463,8 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                     <div className="flex flex-wrap items-center gap-2">
                       <label
                         htmlFor="profile-avatar-upload"
-                        className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--vs-text)] transition-colors hover:border-[var(--vs-accent)] hover:text-[var(--vs-accent)] ${
-                          isUploadingAvatar ? "pointer-events-none opacity-60" : ""
-                        }`}
+                        className={`inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--vs-text)] transition-colors hover:border-[var(--vs-accent)] hover:text-[var(--vs-accent)] ${isUploadingAvatar ? "pointer-events-none opacity-60" : ""
+                          }`}
                       >
                         <UploadIcon className="h-3.5 w-3.5" />
                         <span>
@@ -489,38 +510,69 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                     <input
                       id="profile-display-name"
                       type="text"
+                      aria-invalid={Boolean(profileErrors.displayName?.[0])}
+                      aria-describedby={
+                        profileErrors.displayName?.[0] ? "profile-display-name-error" : undefined
+                      }
                       value={displayName}
-                      onChange={(e) => setDisplayName(e.target.value)}
+                      onChange={(e) => {
+                        setDisplayName(e.target.value);
+                        clearProfileFieldError("displayName");
+                      }}
                       className="h-9 w-full rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] focus:border-[var(--vs-accent)] focus:bg-[var(--vs-surface)] focus:outline-none"
                     />
                     {profileErrors.displayName?.[0] && (
-                      <p className="text-[11px] font-medium text-[var(--vs-live)]">
+                      <p
+                        id="profile-display-name-error"
+                        className="text-[11px] font-medium text-[var(--vs-live)]"
+                      >
                         {profileErrors.displayName[0]}
                       </p>
                     )}
                   </div>
 
                   <div className="space-y-1.5">
-                    <label
-                      htmlFor="profile-username"
-                      className="text-xs font-semibold text-[var(--vs-text)]"
-                    >
-                      Channel handle
-                    </label>
-                    <div className="relative">
-                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 font-mono text-sm text-[var(--vs-text-muted)]">
-                        @
-                      </span>
-                      <input
-                        id="profile-username"
-                        type="text"
-                        value={username}
-                        onChange={(e) => setUsername(e.target.value)}
-                        className="h-9 w-full rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] pl-7 pr-3 text-sm text-[var(--vs-text)] focus:border-[var(--vs-accent)] focus:bg-[var(--vs-surface)] focus:outline-none"
-                      />
+                    <div className="flex items-center justify-between">
+                      <label
+                        htmlFor="profile-username"
+                        className="text-xs font-semibold text-[var(--vs-text)]"
+                      >
+                        Username
+                      </label>
+                      {trimmedUsername.length > 0 &&
+                        trimmedUsername !== user.username &&
+                        !profileErrors.username?.[0] && (
+                          <span
+                            className={`text-[11px] font-medium ${isUsernameValid ? "text-[var(--vs-ok)]" : "text-[var(--vs-live)]"
+                              }`}
+                          >
+                            {isUsernameValid
+                              ? "Valid username"
+                              : isReservedUsername
+                                ? "Reserved username"
+                                : "3–32 chars: letters, digits, _"}
+                          </span>
+                        )}
                     </div>
+                    <input
+                      id="profile-username"
+                      type="text"
+                      aria-invalid={Boolean(profileErrors.username?.[0])}
+                      aria-describedby={
+                        profileErrors.username?.[0] ? "profile-username-error" : undefined
+                      }
+                      value={username}
+                      onChange={(e) => {
+                        setUsername(e.target.value);
+                        clearProfileFieldError("username");
+                      }}
+                      className="h-9 w-full rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] focus:border-[var(--vs-accent)] focus:bg-[var(--vs-surface)] focus:outline-none"
+                    />
                     {profileErrors.username?.[0] && (
-                      <p className="text-[11px] font-medium text-[var(--vs-live)]">
+                      <p
+                        id="profile-username-error"
+                        className="text-[11px] font-medium text-[var(--vs-live)]"
+                      >
                         {profileErrors.username[0]}
                       </p>
                     )}
@@ -537,12 +589,20 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                   <input
                     id="profile-email"
                     type="email"
+                    aria-invalid={Boolean(profileErrors.email?.[0])}
+                    aria-describedby={profileErrors.email?.[0] ? "profile-email-error" : undefined}
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      clearProfileFieldError("email");
+                    }}
                     className="h-9 w-full rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] focus:border-[var(--vs-accent)] focus:bg-[var(--vs-surface)] focus:outline-none"
                   />
                   {profileErrors.email?.[0] && (
-                    <p className="text-[11px] font-medium text-[var(--vs-live)]">
+                    <p
+                      id="profile-email-error"
+                      className="text-[11px] font-medium text-[var(--vs-live)]"
+                    >
                       {profileErrors.email[0]}
                     </p>
                   )}
@@ -558,12 +618,20 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                   <textarea
                     id="profile-bio"
                     rows={3}
+                    aria-invalid={Boolean(profileErrors.bio?.[0])}
+                    aria-describedby={profileErrors.bio?.[0] ? "profile-bio-error" : undefined}
                     value={bio}
-                    onChange={(e) => setBio(e.target.value)}
+                    onChange={(e) => {
+                      setBio(e.target.value);
+                      clearProfileFieldError("bio");
+                    }}
                     className="w-full rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] p-3 text-sm text-[var(--vs-text)] focus:border-[var(--vs-accent)] focus:bg-[var(--vs-surface)] focus:outline-none"
                   />
                   {profileErrors.bio?.[0] && (
-                    <p className="text-[11px] font-medium text-[var(--vs-live)]">
+                    <p
+                      id="profile-bio-error"
+                      className="text-[11px] font-medium text-[var(--vs-live)]"
+                    >
                       {profileErrors.bio[0]}
                     </p>
                   )}
@@ -586,8 +654,7 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                     Appearance
                   </h2>
                   <p className="mt-0.5 text-xs text-[var(--vs-text-muted)]">
-                    Light Mode is VeloStream&apos;s default. Switch anytime; your selection is saved
-                    in a preference cookie when accepted.
+                    Light Mode is VeloStream&apos;s default. Choose your preferred theme; your selection is saved to your account.
                   </p>
                 </div>
 
@@ -598,11 +665,10 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                       setTheme("light");
                       toast.info("Switched appearance to Light Mode.");
                     }}
-                    className={`flex items-start justify-between rounded-xl border p-4 text-left transition-colors ${
-                      theme === "light"
-                        ? "border-[var(--vs-accent)] bg-[var(--vs-accent-soft)]"
-                        : "border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] hover:border-[var(--vs-accent)]/60"
-                    }`}
+                    className={`flex items-start justify-between rounded-xl border p-4 text-left transition-colors ${theme === "light"
+                      ? "border-[var(--vs-accent)] bg-[var(--vs-accent-soft)]"
+                      : "border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] hover:border-[var(--vs-accent)]/60"
+                      }`}
                   >
                     <div className="space-y-1">
                       <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--vs-text)]">
@@ -626,11 +692,10 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                       setTheme("dark");
                       toast.info("Switched appearance to Dark Mode.");
                     }}
-                    className={`flex items-start justify-between rounded-xl border p-4 text-left transition-colors ${
-                      theme === "dark"
-                        ? "border-[var(--vs-accent)] bg-[var(--vs-accent-soft)]"
-                        : "border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] hover:border-[var(--vs-accent)]/60"
-                    }`}
+                    className={`flex items-start justify-between rounded-xl border p-4 text-left transition-colors ${theme === "dark"
+                      ? "border-[var(--vs-accent)] bg-[var(--vs-accent-soft)]"
+                      : "border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] hover:border-[var(--vs-accent)]/60"
+                      }`}
                   >
                     <div className="space-y-1">
                       <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--vs-text)]">
@@ -687,7 +752,7 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                 <div className="space-y-1.5">
                   <label
                     htmlFor="channel-category"
-                    className="text-xs font-semibold text-[var(--vs-text)]"
+                    className="text-xs mr-2 font-semibold text-[var(--vs-text)]"
                   >
                     Category
                   </label>
@@ -843,7 +908,7 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                 <div className="space-y-1.5">
                   <label
                     htmlFor="current-password"
-                    className="text-xs font-semibold text-[var(--vs-text)]"
+                    className="text-xs mr-2 font-semibold text-[var(--vs-text)]"
                   >
                     Current password
                   </label>
@@ -963,9 +1028,9 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                           }
                           toast.success(
                             res.message ??
-                              (checked
-                                ? "Slow mode enabled (3s between messages)."
-                                : "Slow mode disabled."),
+                            (checked
+                              ? "Slow mode enabled (3s between messages)."
+                              : "Slow mode disabled."),
                           );
                         });
                       }}

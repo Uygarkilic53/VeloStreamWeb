@@ -9,20 +9,21 @@ import {
 } from "react";
 import { ToastContainer } from "react-toastify";
 import {
-  acceptCookiesWithTheme,
+  acceptCookiesConsent,
   clearPreferenceCookies,
-  getStoredThemePreference,
+  deleteCookie,
   hasAcceptedCookies,
-  persistThemeCookie,
+  COOKIE_THEME_NAME,
   type ThemeMode,
 } from "./cookies";
+import { AuthContext, type AuthAttemptResult } from "./auth";
 
 interface ThemeContextValue {
   theme: ThemeMode;
   cookiesAccepted: boolean;
   isCookieDialogOpen: boolean;
-  setTheme: (next: ThemeMode) => void;
-  toggleTheme: () => void;
+  setTheme: (next: ThemeMode) => Promise<AuthAttemptResult>;
+  toggleTheme: () => Promise<AuthAttemptResult>;
   acceptCookies: () => void;
   openCookieSettings: () => void;
   closeCookieSettings: () => void;
@@ -41,41 +42,45 @@ function applyThemeToDocument(theme: ThemeMode): void {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
+  const auth = useContext(AuthContext);
   const [cookiesAccepted, setCookiesAccepted] = useState<boolean>(() => hasAcceptedCookies());
-  const [theme, setThemeState] = useState<ThemeMode>(() => getStoredThemePreference());
   const [isCookieDialogOpen, setIsCookieDialogOpen] = useState<boolean>(
     () => !hasAcceptedCookies(),
   );
+
+  // Appearance is a user preference setting when signed in; unauthenticated visitors default to "light".
+  const theme: ThemeMode = auth?.user?.theme ?? "light";
+
+  // Clean up any legacy device-wide theme cookies so they do not linger.
+  useEffect(() => {
+    deleteCookie(COOKIE_THEME_NAME);
+  }, []);
 
   useEffect(() => {
     applyThemeToDocument(theme);
   }, [theme]);
 
   const setTheme = useCallback(
-    (next: ThemeMode) => {
-      setThemeState(next);
-      if (cookiesAccepted) {
-        persistThemeCookie(next);
+    async (next: ThemeMode): Promise<AuthAttemptResult> => {
+      if (!auth) {
+        applyThemeToDocument(next);
+        return { ok: true };
       }
+      return auth.updateTheme(next);
     },
-    [cookiesAccepted],
+    [auth],
   );
 
-  const toggleTheme = useCallback(() => {
-    setThemeState((prev) => {
-      const next: ThemeMode = prev === "light" ? "dark" : "light";
-      if (cookiesAccepted) {
-        persistThemeCookie(next);
-      }
-      return next;
-    });
-  }, [cookiesAccepted]);
+  const toggleTheme = useCallback(async (): Promise<AuthAttemptResult> => {
+    const next: ThemeMode = theme === "light" ? "dark" : "light";
+    return setTheme(next);
+  }, [setTheme, theme]);
 
   const acceptCookies = useCallback(() => {
-    acceptCookiesWithTheme(theme);
+    acceptCookiesConsent();
     setCookiesAccepted(true);
     setIsCookieDialogOpen(false);
-  }, [theme]);
+  }, []);
 
   const openCookieSettings = useCallback(() => {
     setIsCookieDialogOpen(true);
@@ -90,7 +95,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const revokeCookies = useCallback(() => {
     clearPreferenceCookies();
     setCookiesAccepted(false);
-    setThemeState("light");
     setIsCookieDialogOpen(true);
   }, []);
 
@@ -144,3 +148,4 @@ export function useTheme(): ThemeContextValue {
   return ctx;
 }
 
+export type { ThemeMode } from "./cookies";

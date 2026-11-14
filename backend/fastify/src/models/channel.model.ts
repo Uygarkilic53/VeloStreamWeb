@@ -8,6 +8,7 @@ import {
   RecordNotFoundError,
   type ChannelModelContract,
   type ChannelView,
+  type PublicUserSummary,
   type UpdateChannelSettingsInput,
   type UpsertChannelBanInput,
   type UpsertChannelBanResult,
@@ -62,7 +63,7 @@ export class ChannelModel implements ChannelModelContract {
   async banUserByUsername(input: UpsertChannelBanInput): Promise<UpsertChannelBanResult> {
     const channel = await this.prisma.channel.findUnique({
       where: { ownerId: input.ownerId },
-      select: { id: true },
+      select: { id: true, slug: true },
     });
     if (!channel) {
       throw new RecordNotFoundError("Channel", "Channel not found for this account.");
@@ -97,6 +98,14 @@ export class ChannelModel implements ChannelModelContract {
       },
     });
 
+    // Remove any active follow from the banned user to this channel
+    await this.prisma.channelFollow.deleteMany({
+      where: {
+        userId: targetUser.id,
+        channelSlug: { equals: channel.slug, mode: "insensitive" },
+      },
+    });
+
     return {
       channelId: channel.id,
       targetUserId: targetUser.id,
@@ -108,6 +117,33 @@ export class ChannelModel implements ChannelModelContract {
         bannedAt: ban.createdAt.toISOString(),
         expiresAt: ban.expiresAt ? ban.expiresAt.toISOString() : null,
       },
+    };
+  }
+
+  async isUserBanned(
+    channelSlugOrUsername: string,
+    userId: string,
+  ): Promise<{ isBanned: boolean; reason?: string }> {
+    const clean = channelSlugOrUsername.trim().replace(/^@/, "");
+    if (!clean || !userId) {
+      return { isBanned: false };
+    }
+    const ban = await this.prisma.channelBan.findFirst({
+      where: {
+        userId,
+        channel: {
+          OR: [
+            { slug: { equals: clean, mode: "insensitive" } },
+            { owner: { username: { equals: clean, mode: "insensitive" } } },
+          ],
+        },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      select: { reason: true },
+    });
+    return {
+      isBanned: Boolean(ban),
+      ...(ban ? { reason: ban.reason } : {}),
     };
   }
 
@@ -169,5 +205,69 @@ export class ChannelModel implements ChannelModelContract {
       select: { channelSlug: true },
     });
     return rows.map((row) => row.channelSlug);
+  }
+
+  async getLiveChannels(excludeUserId?: string): Promise<PublicUserSummary[]> {
+    const liveChannels = await this.prisma.channel.findMany({
+      where: {
+        isLive: true,
+        ...(excludeUserId
+          ? {
+              bans: {
+                none: {
+                  userId: excludeUserId,
+                  OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+                },
+              },
+            }
+          : {}),
+      },
+      orderBy: { updatedAt: "desc" },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+            bio: true,
+          },
+        },
+      },
+    });
+
+    return liveChannels.map((ch) => ({
+      id: ch.owner.id,
+      username: ch.owner.username,
+      displayName: ch.owner.displayName,
+      avatarUrl: ch.owner.avatarUrl ?? null,
+      bio: ch.owner.bio,
+      isLive: true,
+      channelTitle: ch.title,
+      channelCategory: normalizeStreamCategory(ch.category),
+    }));
+  }
+
+  async setLiveStatus(ownerId: string, isLive: boolean): Promise<ChannelView> {
+    try {
+      const updated = await this.prisma.channel.update({
+        where: { ownerId },
+        data: { isLive },
+      });
+      return {
+        id: updated.id,
+        slug: updated.slug,
+        title: updated.title,
+        category: normalizeStreamCategory(updated.category),
+        streamKey: updated.streamKey,
+        slowMode: updated.slowMode,
+        isLive: updated.isLive,
+      };
+    } catch (err) {
+      if (isPrismaNotFoundError(err)) {
+        throw new RecordNotFoundError("Channel", "Channel not found for this account.");
+      }
+      throw err;
+    }
   }
 }

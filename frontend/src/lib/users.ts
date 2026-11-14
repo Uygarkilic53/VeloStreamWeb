@@ -28,6 +28,14 @@ const PublicProfileResponseSchema = z.object({
   user: PublicUserSummarySchema,
 });
 
+const LiveChannelsResponseSchema = z.object({
+  channels: z.array(PublicUserSummarySchema),
+});
+
+const FollowingUsersResponseSchema = z.object({
+  following: z.array(PublicUserSummarySchema),
+});
+
 export interface DirectoryUserMatch {
   id: string;
   username: string;
@@ -59,16 +67,17 @@ const ACCENT_PALETTE = [
   "#7C3AED",
 ] as const;
 
-function pickAccent(username: string): string {
+function pickAccent(username?: string): string {
+  const safe = username ?? "";
   let hash = 0;
-  for (let i = 0; i < username.length; i += 1) {
-    hash = (hash * 31 + username.charCodeAt(i)) | 0;
+  for (let i = 0; i < safe.length; i += 1) {
+    hash = (hash * 31 + safe.charCodeAt(i)) | 0;
   }
   return ACCENT_PALETTE[Math.abs(hash) % ACCENT_PALETTE.length] ?? "#2563EB";
 }
 
-function deriveInitials(displayName: string, username: string): string {
-  const source = (displayName || username).trim();
+function deriveInitials(displayName?: string, username?: string): string {
+  const source = (displayName || username || "V").trim();
   const parts = source.split(/\s+/);
   const first = parts[0]?.[0] ?? "V";
   const second = parts[1]?.[0] ?? "";
@@ -114,6 +123,7 @@ export function publicUserToStreamItem(user: {
 export async function searchUsersApi(
   query: string,
   signal?: AbortSignal,
+  accessToken?: string | null,
 ): Promise<{ users: PublicUserSummary[]; relatedLiveUsers: PublicUserSummary[] }> {
   const trimmed = query.trim();
   if (!trimmed) {
@@ -124,9 +134,13 @@ export async function searchUsersApi(
   const url = `${baseUrl}/api/v1/users/search?q=${encodeURIComponent(trimmed)}&limit=12`;
 
   try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`;
+    }
     const response = await fetch(url, {
       method: "GET",
-      headers: { Accept: "application/json" },
+      headers,
       ...(signal ? { signal } : {}),
     });
     if (!response.ok) {
@@ -146,10 +160,15 @@ export async function searchUsersApi(
   }
 }
 
+export type FetchPublicUserResult =
+  | (PublicUserSummary & { isBanned?: false })
+  | { isBanned: true; bannedBy: string; reason: string | null; message: string };
+
 export async function fetchPublicUserApi(
   username: string,
   signal?: AbortSignal,
-): Promise<PublicUserSummary | null> {
+  accessToken?: string | null,
+): Promise<FetchPublicUserResult | null> {
   const clean = username.trim().replace(/^@/, "");
   if (!clean) {
     return null;
@@ -159,11 +178,32 @@ export async function fetchPublicUserApi(
   const url = `${baseUrl}/api/v1/users/${encodeURIComponent(clean)}`;
 
   try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`;
+    }
     const response = await fetch(url, {
       method: "GET",
-      headers: { Accept: "application/json" },
+      headers,
       ...(signal ? { signal } : {}),
     });
+
+    if (response.status === 403) {
+      const raw: unknown = await response.json().catch(() => ({}));
+      const errorObj = (typeof raw === "object" && raw !== null ? raw : {}) as {
+        error?: string;
+        message?: string;
+        bannedBy?: string;
+        reason?: string | null;
+      };
+      return {
+        isBanned: true,
+        bannedBy: errorObj.bannedBy || clean,
+        reason: errorObj.reason ?? null,
+        message: errorObj.message ?? `You have been banned by @${clean}.`,
+      };
+    }
+
     if (!response.ok) {
       return null;
     }
@@ -173,6 +213,97 @@ export async function fetchPublicUserApi(
   } catch {
     return null;
   }
+}
+
+export async function fetchLiveChannelsApi(
+  signal?: AbortSignal,
+  accessToken?: string | null,
+): Promise<PublicUserSummary[] | null> {
+  const baseUrl = getFrontendEnv().coreApiUrl.replace(/\/+$/, "");
+  const url = `${baseUrl}/api/v1/channels/live`;
+
+  try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`;
+    }
+    const response = await fetch(url, {
+      method: "GET",
+      headers,
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const raw: unknown = await response.json();
+    const parsed = LiveChannelsResponseSchema.safeParse(raw);
+    return parsed.success ? parsed.data.channels : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchFollowedUsersApi(
+  accessToken: string,
+  signal?: AbortSignal,
+): Promise<PublicUserSummary[]> {
+  const baseUrl = getFrontendEnv().coreApiUrl.replace(/\/+$/, "");
+  const url = `${baseUrl}/api/v1/users/me/following`;
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) {
+      return [];
+    }
+    const raw: unknown = await response.json();
+    const parsed = FollowingUsersResponseSchema.safeParse(raw);
+    return parsed.success ? parsed.data.following : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function setChannelLiveApi(
+  isLive: boolean,
+  accessToken: string,
+): Promise<{ ok: boolean; message?: string }> {
+  const baseUrl = getFrontendEnv().coreApiUrl.replace(/\/+$/, "");
+  const url = `${baseUrl}/api/v1/channels/me/live`;
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ isLive }),
+    });
+    const data = (await response.json().catch(() => ({}))) as { message?: string };
+    if (!response.ok) {
+      return { ok: false, message: data.message ?? "Failed to update broadcast status." };
+    }
+    return data.message ? { ok: true, message: data.message } : { ok: true };
+  } catch {
+    return { ok: false, message: "Network error updating broadcast status." };
+  }
+}
+
+function isSelfUser(
+  candidate: { id?: string; username: string },
+  currentUser: UserAccount | null,
+): boolean {
+  if (!currentUser) return false;
+  if (candidate.id && candidate.id === currentUser.id) return true;
+  return candidate.username.toLowerCase() === currentUser.username.toLowerCase();
 }
 
 export function useDirectorySearch(
@@ -203,7 +334,7 @@ export function useDirectorySearch(
     setIsSearching(true);
 
     const timer = window.setTimeout(() => {
-      void searchUsersApi(trimmedQuery, controller.signal)
+      void searchUsersApi(trimmedQuery, controller.signal, currentUser?.accessToken)
         .then((res) => {
           if (!controller.signal.aborted) {
             setBackendResult({
@@ -224,7 +355,7 @@ export function useDirectorySearch(
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [trimmedQuery]);
+  }, [currentUser?.accessToken, currentUser?.id, currentUser?.username, trimmedQuery]);
 
   return useMemo(() => {
     if (!trimmedQuery) {
@@ -247,11 +378,14 @@ export function useDirectorySearch(
       streamBySlug.set(stream.slug.toLowerCase(), stream);
     }
 
+    const bannedSet = new Set((currentUser?.bannedFromSlugs ?? []).map((s) => s.toLowerCase()));
     const usersByKey = new Map<string, DirectoryUserMatch>();
 
-    // 1. Real backend users (online or offline)
+    // 1. Real backend users (online or offline), excluding the signed-in user themselves and banned channels
     for (const u of activeBackend.users) {
+      if (isSelfUser(u, currentUser)) continue;
       const key = u.username.toLowerCase();
+      if (bannedSet.has(key)) continue;
       const liveStream = streamBySlug.get(key);
       usersByKey.set(key, {
         id: u.id,
@@ -272,32 +406,11 @@ export function useDirectorySearch(
       });
     }
 
-    // 2. Signed-in user (covers local preview session or immediate profile updates)
-    if (currentUser) {
-      const key = currentUser.username.toLowerCase();
-      const matchesUser =
-        (handleQuery.length > 0 && currentUser.username.toLowerCase().includes(handleQuery)) ||
-        currentUser.displayName.toLowerCase().includes(lowerQuery);
-
-      if (matchesUser && !usersByKey.has(key)) {
-        const liveStream = streamBySlug.get(key);
-        usersByKey.set(key, {
-          id: currentUser.id,
-          username: currentUser.username,
-          displayName: currentUser.displayName,
-          avatarUrl: currentUser.avatarUrl,
-          bio: currentUser.bio,
-          isLive: Boolean(liveStream?.isLive),
-          channelTitle: liveStream?.title ?? currentUser.channelTitle,
-          channelCategory: liveStream?.category ?? currentUser.channelCategory,
-          ...(liveStream ? { viewerCount: liveStream.viewerCount } : {}),
-        });
-      }
-    }
-
-    // 3. Directory stream creators matching by username (slug) or displayName
+    // 2. Directory stream creators matching by username (slug) or displayName, excluding self and banned
     for (const stream of streams) {
+      if (isSelfUser({ id: stream.id, username: stream.slug }, currentUser)) continue;
       const key = stream.slug.toLowerCase();
+      if (bannedSet.has(key)) continue;
       if (usersByKey.has(key)) continue;
       const matchesCreator =
         (handleQuery.length > 0 && stream.slug.toLowerCase().includes(handleQuery)) ||
@@ -334,7 +447,7 @@ export function useDirectorySearch(
     });
 
     // Related live users: combine backend related live users + live directory streams
-    // matching query text or sharing a category with matched users.
+    // matching query text or sharing a category with matched users, excluding self.
     const matchedCategories = new Set<StreamCategory>();
     for (const u of matchedUsers) {
       if (u.channelCategory) {
@@ -345,7 +458,9 @@ export function useDirectorySearch(
     const liveMap = new Map<string, StreamDirectoryItem>();
     for (const backendLive of activeBackend.relatedLiveUsers) {
       if (!backendLive.isLive) continue;
+      if (isSelfUser(backendLive, currentUser)) continue;
       const key = backendLive.username.toLowerCase();
+      if (bannedSet.has(key)) continue;
       const existingStream = streamBySlug.get(key);
       liveMap.set(
         key,
@@ -359,7 +474,9 @@ export function useDirectorySearch(
 
     for (const stream of streams) {
       if (!stream.isLive) continue;
+      if (isSelfUser({ id: stream.id, username: stream.slug }, currentUser)) continue;
       const key = stream.slug.toLowerCase();
+      if (bannedSet.has(key)) continue;
       if (liveMap.has(key)) continue;
 
       const haystack = `${stream.title} ${stream.slug} ${stream.displayName} ${stream.category} ${stream.subCategory} ${stream.tags.join(" ")}`.toLowerCase();

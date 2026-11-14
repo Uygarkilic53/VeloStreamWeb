@@ -119,7 +119,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   app.setErrorHandler((err, _request, reply) => {
     if (err instanceof HttpApiError) {
-      return sendApiError(reply, err.statusCode, err.code, err.message, err.fieldErrors);
+      return sendApiError(reply, err.statusCode, err.code, err.message, err.fieldErrors, err.details);
     }
 
     if (

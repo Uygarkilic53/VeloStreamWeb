@@ -1,11 +1,11 @@
 interface StatusPillProps {
   label: string;
-  tone: "live" | "ok" | "offline";
+  tone: "live" | "ok" | "offline" | "danger";
 }
 
 export function StatusPill({ label, tone }: StatusPillProps) {
   const dotColor =
-    tone === "live"
+    tone === "live" || tone === "danger"
       ? "bg-[var(--vs-live)]"
       : tone === "ok"
         ? "bg-[var(--vs-ok)]"

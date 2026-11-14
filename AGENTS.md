@@ -13,6 +13,7 @@ Respect strict separation between **frontend**, **backend**, and **infra**:
   - **UI Rule:** Before designing or modifying UI components, layouts, or styling in `frontend/`, read and follow `.agents/skills/frontend-design/SKILL.md`.
   - **Toast Rule:** Use `react-toastify` in `frontend/` whenever displaying user-facing messages sent from an API (see Section 3, item 8).
   - **Icons Rule:** Use `react-icons` whenever icons are needed across `frontend/` instead of writing custom inline SVG icons (see Section 3, item 10).
+  - **Loading Rule:** Use the reusable `LoadingSpinner` component (`frontend/src/components/LoadingSpinner.tsx`) whenever presenting asynchronous loading or hydration states, designed as a flat line like loading with blueish color, and never fill loading states with dummy data (see Section 3, item 11).
   - Never bundle private keys, database credentials, or internal webhook secrets into `frontend/`.
 - `backend/fastify/` (**The Brain**): Node.js + Fastify + TypeScript + Prisma ORM.
   - **Sole owner of PostgreSQL schema and migrations** (`backend/fastify/prisma/`).
@@ -96,6 +97,8 @@ The frontend does **not** use backend MVC. Continue using the existing pattern: 
    - In Cloudinary, we work under the `VeloStream` folder. Whenever adding a new file, asset upload, or subfolder in Cloudinary, always place it under `VeloStream` (e.g., `VeloStream/...`) rather than at the Cloudinary root.
 10. **UI Icons (`react-icons`):**
    - Use `react-icons` whenever icons are needed throughout `frontend/` (import from `react-icons` or shared wrappers in `frontend/src/components/Icons.tsx` backed by `react-icons`) rather than hand-authoring custom inline SVG icon components. Use icons purposefully where they improve clarity and make actions/navigation scannable without cluttering the UI.
+11. **Loading States (`LoadingSpinner`):**
+   - Use the reusable `LoadingSpinner` component (`frontend/src/components/LoadingSpinner.tsx`) whenever displaying asynchronous loading or data hydration states across `frontend/` (such as live channel discovery, channel stage loading, or creator lists). Design loading states with the flat line blueish loading animation; never use dummy data, mock channels, or fallback records as fillers during loading states.
 
 ---
 
@@ -142,6 +145,7 @@ Every time you finish writing or editing code, explicitly verify:
 - [ ] **Runtime & integration sanity:** No broken imports, circular dependencies, stale generated Prisma clients (`npx prisma generate`), unmatched port/env names, or unhandled console/network errors in browser tests.
 - [ ] **Diff & documentation check:** Inspect `git status` / `git diff` (when in a Git repo) so no stray debug logs, temporary files, or secret files are left behind, keep `.env.example` / `docs/project_structure_plan.md` updated if ports, env vars, or folder structure changed, verify Swagger/OpenAPI docs on the Fastify and Fiber ports reflect any new or modified APIs, and if a new API endpoint was created, test it via Swagger and report the results.
 - [ ] **Clean up disposable test files:** Delete any unnecessary one-off files created during testing that will not be used again (such as scratch outputs, ad-hoc helper scripts, throwaway fixtures, logs, or screenshots), while keeping actual test suites and reusable testing scripts.
+- [ ] **Remove one-off feature test files:** When you create a test file to test features you added, you must remove it after running your tests if that test file will not be used again.
 
 ---
 

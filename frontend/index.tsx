@@ -1,43 +1,14 @@
-import {
-  COOKIE_CONSENT_ACCEPTED,
-  COOKIE_CONSENT_NAME,
-  COOKIE_THEME_NAME,
-} from "./src/lib/cookies";
-
-function applyStoredThemeBeforeMount(
-  consentName: string,
-  acceptedValue: string,
-  themeName: string,
-): void {
+function applyStoredThemeBeforeMount(): void {
   try {
-    const pairs = document.cookie ? document.cookie.split(";") : [];
-    let consent = "";
-    let theme = "";
-    for (let i = 0; i < pairs.length; i += 1) {
-      const pair = pairs[i] ?? "";
-      const idx = pair.indexOf("=");
-      if (idx === -1) continue;
-      const k = pair.slice(0, idx).trim();
-      const v = decodeURIComponent(pair.slice(idx + 1).trim());
-      if (k === consentName) consent = v;
-      if (k === themeName) theme = v;
-    }
-    if (consent === acceptedValue && theme === "dark") {
-      document.documentElement.classList.add("dark");
-      document.documentElement.dataset.theme = "dark";
-    } else {
-      document.documentElement.classList.remove("dark");
-      document.documentElement.dataset.theme = "light";
-    }
+    document.documentElement.classList.remove("dark");
+    document.documentElement.dataset.theme = "light";
   } catch {
     document.documentElement.dataset.theme = "light";
   }
 }
 
 export function Document() {
-  const bootstrapThemeScript = `(${applyStoredThemeBeforeMount.toString()})(${JSON.stringify(
-    COOKIE_CONSENT_NAME,
-  )},${JSON.stringify(COOKIE_CONSENT_ACCEPTED)},${JSON.stringify(COOKIE_THEME_NAME)});`;
+  const bootstrapThemeScript = `(${applyStoredThemeBeforeMount.toString()})();`;
 
   return (
     <html lang="en">

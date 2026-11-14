@@ -1,8 +1,10 @@
 export const COOKIE_CONSENT_NAME = "velostream_cookie_consent";
 export const COOKIE_THEME_NAME = "velostream_theme";
+export const COOKIE_REMEMBER_NAME = "velostream_remember_session";
 export const COOKIE_CONSENT_ACCEPTED = "accepted";
 
 const ONE_YEAR_SECONDS = 60 * 60 * 24 * 365;
+export const THIRTY_DAYS_SECONDS = 60 * 60 * 24 * 30;
 
 export type ThemeMode = "light" | "dark";
 
@@ -21,11 +23,11 @@ export const COOKIE_DISCLOSURES: readonly CookieDisclosureItem[] = [
     category: "Essential",
   },
   {
-    name: COOKIE_THEME_NAME,
+    name: COOKIE_REMEMBER_NAME,
     purpose:
-      "Remembers your Light Mode or Dark Mode choice automatically across visits, even when you are not signed in.",
-    retention: "365 days (SameSite=Lax)",
-    category: "Preference",
+      "Stores your signed-in session on this device when you select 'Remember me', keeping you signed in even if the server restarts or is temporarily offline.",
+    retention: "30 days (SameSite=Lax)",
+    category: "Essential",
   },
 ];
 
@@ -82,31 +84,112 @@ export function hasAcceptedCookies(cookieSource?: string): boolean {
   return cookies[COOKIE_CONSENT_NAME] === COOKIE_CONSENT_ACCEPTED;
 }
 
-export function getStoredThemePreference(cookieSource?: string): ThemeMode {
+export function getStoredThemePreference(_cookieSource?: string): ThemeMode {
+  return "light";
+}
+
+export function persistThemeCookie(_theme: ThemeMode): boolean {
+  deleteCookie(COOKIE_THEME_NAME);
+  return false;
+}
+
+export function acceptCookiesConsent(): void {
+  setCookie(COOKIE_CONSENT_NAME, COOKIE_CONSENT_ACCEPTED);
+  deleteCookie(COOKIE_THEME_NAME);
+}
+
+export function acceptCookiesWithTheme(_theme?: ThemeMode): void {
+  acceptCookiesConsent();
+}
+
+export interface RememberedSessionUser {
+  id: string;
+  username: string;
+  displayName: string;
+  email: string;
+  bio?: string | undefined;
+  avatarUrl?: string | null | undefined;
+  role?: string | undefined;
+  theme?: "light" | "dark" | undefined;
+  channelTitle?: string | undefined;
+  channelCategory?: string | undefined;
+  streamKey?: string | undefined;
+  slowMode?: boolean | undefined;
+  bannedUsers?: { username: string; bannedAtLabel: string; reason: string }[] | undefined;
+  bannedFromSlugs?: string[] | undefined;
+  followedSlugs?: string[] | undefined;
+  accessToken?: string | null | undefined;
+  sessionKind?: "backend" | "preview" | undefined;
+}
+
+export interface RememberedSessionData {
+  user: RememberedSessionUser;
+  accessToken: string | null;
+  refreshToken: string | null;
+  rememberSession: boolean;
+}
+
+export function serializeRememberSession(data: RememberedSessionData): string {
+  const avatarUrl =
+    data.user.avatarUrl && data.user.avatarUrl.length > 500 ? null : (data.user.avatarUrl ?? null);
+  const bio =
+    data.user.bio && data.user.bio.length > 300
+      ? data.user.bio.slice(0, 300)
+      : (data.user.bio ?? "");
+
+  const safeUser: RememberedSessionUser = {
+    ...data.user,
+    // Omit large base64 data URIs from cookie to avoid exceeding 4KB browser limit
+    avatarUrl,
+    bio,
+  };
+  return JSON.stringify({
+    ...data,
+    user: safeUser,
+  });
+}
+
+export function setRememberMeCookie(
+  data: RememberedSessionData,
+  maxAgeSeconds = THIRTY_DAYS_SECONDS,
+): void {
+  if (typeof document === "undefined") {
+    return;
+  }
+  try {
+    const serialized = serializeRememberSession(data);
+    setCookie(COOKIE_REMEMBER_NAME, serialized, maxAgeSeconds);
+  } catch {
+    // Ignore serialization or storage restriction errors
+  }
+}
+
+export function getRememberMeCookie(cookieSource?: string): RememberedSessionData | null {
   const source =
     cookieSource ?? (typeof document !== "undefined" ? document.cookie : "");
   const cookies = parseCookies(source);
-  if (cookies[COOKIE_CONSENT_NAME] !== COOKIE_CONSENT_ACCEPTED) {
-    return "light";
+  const raw = cookies[COOKIE_REMEMBER_NAME];
+  if (!raw) {
+    return null;
   }
-  return cookies[COOKIE_THEME_NAME] === "dark" ? "dark" : "light";
+  try {
+    const parsed = JSON.parse(raw) as Partial<RememberedSessionData>;
+    if (parsed && parsed.user && typeof parsed.user.username === "string" && parsed.user.id) {
+      return parsed as RememberedSessionData;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
-export function persistThemeCookie(theme: ThemeMode): boolean {
-  if (!hasAcceptedCookies()) {
-    return false;
-  }
-  setCookie(COOKIE_THEME_NAME, theme);
-  return true;
-}
-
-export function acceptCookiesWithTheme(theme: ThemeMode): void {
-  setCookie(COOKIE_CONSENT_NAME, COOKIE_CONSENT_ACCEPTED);
-  setCookie(COOKIE_THEME_NAME, theme);
+export function clearRememberMeCookie(): void {
+  deleteCookie(COOKIE_REMEMBER_NAME);
 }
 
 export function clearPreferenceCookies(): void {
   deleteCookie(COOKIE_CONSENT_NAME);
   deleteCookie(COOKIE_THEME_NAME);
+  deleteCookie(COOKIE_REMEMBER_NAME);
 }
 

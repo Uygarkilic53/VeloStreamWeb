@@ -15,6 +15,7 @@ import (
 
 	"github.com/velostream/fiber/app"
 	"github.com/velostream/fiber/controllers"
+	"github.com/velostream/fiber/models"
 	"github.com/velostream/fiber/services"
 )
 
@@ -52,6 +53,10 @@ func TestMediaMTXWebhooks(t *testing.T) {
 	client := services.NewClient("creator_1", "usr_1", "viewer1")
 	h.Register(client)
 	defer h.Unregister(client)
+
+	liveClient := services.NewClient("__live__", "viewer", "viewer")
+	h.Register(liveClient)
+	defer h.Unregister(liveClient)
 
 	fiberApp := app.New(app.Options{
 		Hub:                h,
@@ -97,6 +102,15 @@ func TestMediaMTXWebhooks(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for stream.status broadcast")
+	}
+
+	select {
+	case msg := <-liveClient.Send:
+		if len(msg) == 0 {
+			t.Fatal("expected stream.status frame broadcast to live subscription client")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for live subscription broadcast")
 	}
 
 	// Publish auth without credentials must fail.
@@ -173,5 +187,72 @@ func TestWebSocketRouteUpgradeAndAuth(t *testing.T) {
 	}
 	if resp401.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 Unauthorized, got %d", resp401.StatusCode)
+	}
+}
+
+func TestStreamSnapshotBroadcast(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := services.NewHubService()
+	go h.Run(ctx)
+
+	liveClient := services.NewClient("__live__", "viewer", "viewer")
+	h.Register(liveClient)
+	defer h.Unregister(liveClient)
+
+	creatorClient := services.NewClient("streamer_x", "usr_x", "StreamerX")
+	h.Register(creatorClient)
+	defer h.Unregister(creatorClient)
+
+	frameBytes, err := json.Marshal(models.WsFrame{
+		Type: models.FrameTypeStreamSnapshot,
+		Payload: models.StreamSnapshotEvent{
+			ChannelID:   "streamer_x",
+			SnapshotURL: "data:image/jpeg;base64,frame_snapshot_data",
+			UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal frame: %v", err)
+	}
+
+	h.Broadcast("streamer_x", frameBytes)
+	h.Broadcast("__live__", frameBytes)
+
+	select {
+	case msg := <-liveClient.Send:
+		var frame models.WsFrame
+		if err := json.Unmarshal(msg, &frame); err != nil {
+			t.Fatalf("unmarshal live frame: %v", err)
+		}
+		if frame.Type != models.FrameTypeStreamSnapshot {
+			t.Fatalf("expected frame type %q, got %q", models.FrameTypeStreamSnapshot, frame.Type)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for stream.snapshot frame on __live__")
+	}
+
+	select {
+	case msg := <-creatorClient.Send:
+		var frame models.WsFrame
+		if err := json.Unmarshal(msg, &frame); err != nil {
+			t.Fatalf("unmarshal creator frame: %v", err)
+		}
+		if frame.Type != models.FrameTypeStreamSnapshot {
+			t.Fatalf("expected frame type %q, got %q", models.FrameTypeStreamSnapshot, frame.Type)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for stream.snapshot frame on streamer_x")
+	}
+
+	// Verify snapshot caching on hub
+	h.SaveSnapshot("streamer_x", frameBytes)
+	allSnaps := h.GetAllSnapshots()
+	if len(allSnaps) != 1 {
+		t.Fatalf("expected 1 cached snapshot, got %d", len(allSnaps))
+	}
+	h.DeleteSnapshot("streamer_x")
+	if len(h.GetAllSnapshots()) != 0 {
+		t.Fatalf("expected 0 cached snapshots after deletion, got %d", len(h.GetAllSnapshots()))
 	}
 }

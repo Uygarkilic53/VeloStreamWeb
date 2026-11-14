@@ -5,6 +5,9 @@ const ErrorResponseSchema = {
   properties: {
     error: { type: "string" },
     message: { type: "string" },
+    banned: { type: "boolean" },
+    bannedBy: { type: "string" },
+    reason: { type: ["string", "null"] },
     fieldErrors: {
       type: "object",
       additionalProperties: {
@@ -56,6 +59,7 @@ const AccountProfileSchema = {
     bio: { type: "string" },
     avatarUrl: { type: ["string", "null"], format: "uri" },
     role: { type: "string", enum: ["USER", "CREATOR", "MODERATOR", "ADMIN"] },
+    theme: { type: "string", enum: ["light", "dark"] },
     createdAt: { type: "string", format: "date-time" },
     channel: {
       anyOf: [ChannelSchema, { type: "null" }],
@@ -63,6 +67,10 @@ const AccountProfileSchema = {
     bannedUsers: {
       type: "array",
       items: ChannelBanSchema,
+    },
+    bannedFromSlugs: {
+      type: "array",
+      items: { type: "string" },
     },
     followedSlugs: {
       type: "array",
@@ -77,9 +85,11 @@ const AccountProfileSchema = {
     "bio",
     "avatarUrl",
     "role",
+    "theme",
     "createdAt",
     "channel",
     "bannedUsers",
+    "bannedFromSlugs",
     "followedSlugs",
   ],
 } as const;
@@ -128,7 +138,8 @@ export const searchUsersRouteSchema: FastifySchema = {
   tags: ["Users"],
   summary: "Search creators/users by username or display name (online and offline)",
   description:
-    "Returns matching users (whether online or offline) with public profile picture, username, display name, and live status, plus related live users.",
+    "Returns matching users (whether online or offline) with public profile picture, username, display name, and live status, plus related live users. When authenticated with a Bearer token, excludes the signed-in user from search results.",
+  security: [{ bearerAuth: [] }, {}],
   querystring: {
     type: "object",
     properties: {
@@ -154,6 +165,9 @@ export const searchUsersRouteSchema: FastifySchema = {
 export const publicUserProfileRouteSchema: FastifySchema = {
   tags: ["Users"],
   summary: "Fetch public user profile and channel live status by username",
+  description:
+    "Fetch public creator profile by username. When authenticated with a Bearer token, verifies whether the requesting user is banned by this creator; returns 403 USER_BANNED if banned.",
+  security: [{ bearerAuth: [] }, {}],
   params: {
     type: "object",
     required: ["username"],
@@ -170,6 +184,7 @@ export const publicUserProfileRouteSchema: FastifySchema = {
       required: ["user"],
     },
     400: ErrorResponseSchema,
+    403: ErrorResponseSchema,
     404: ErrorResponseSchema,
     503: ErrorResponseSchema,
   },
@@ -196,11 +211,19 @@ export const jwksRouteSchema: FastifySchema = {
 export const registerRouteSchema: FastifySchema = {
   tags: ["Auth"],
   summary: "Register a new creator account",
+  description:
+    "Creates a new user account with a unique case-insensitive username (3–32 letters, numbers, or underscores) and email.",
   body: {
     type: "object",
     required: ["username", "email", "password"],
     properties: {
-      username: { type: "string", minLength: 3, maxLength: 32 },
+      username: {
+        type: "string",
+        minLength: 3,
+        maxLength: 32,
+        pattern: "^[a-zA-Z0-9_]+$",
+        description: "Unique username (3–32 characters: letters, numbers, underscores)",
+      },
       email: { type: "string", format: "email" },
       password: { type: "string", minLength: 8, maxLength: 128 },
       displayName: { type: "string", minLength: 1, maxLength: 50 },
@@ -327,10 +350,17 @@ export const updateProfileRouteSchema: FastifySchema = {
     required: ["displayName", "username", "email"],
     properties: {
       displayName: { type: "string", minLength: 1, maxLength: 50 },
-      username: { type: "string", minLength: 3, maxLength: 32 },
+      username: {
+        type: "string",
+        minLength: 3,
+        maxLength: 32,
+        pattern: "^[a-zA-Z0-9_]+$",
+        description: "Unique username (3–32 characters: letters, numbers, underscores)",
+      },
       email: { type: "string", format: "email" },
       bio: { type: "string", maxLength: 500 },
       avatarUrl: { type: ["string", "null"], format: "uri" },
+      theme: { type: "string", enum: ["light", "dark"] },
     },
   },
   response: {
@@ -347,6 +377,32 @@ export const updateProfileRouteSchema: FastifySchema = {
     401: ErrorResponseSchema,
     404: ErrorResponseSchema,
     409: ErrorResponseSchema,
+  },
+};
+
+export const updateThemeRouteSchema: FastifySchema = {
+  tags: ["Users"],
+  summary: "Update authenticated user appearance theme preference",
+  security: [{ bearerAuth: [] }],
+  body: {
+    type: "object",
+    required: ["theme"],
+    properties: {
+      theme: { type: "string", enum: ["light", "dark"] },
+    },
+  },
+  response: {
+    200: {
+      type: "object",
+      properties: {
+        user: AccountProfileSchema,
+        message: { type: "string" },
+      },
+      required: ["user"],
+    },
+    400: ErrorResponseSchema,
+    401: ErrorResponseSchema,
+    404: ErrorResponseSchema,
   },
 };
 
@@ -426,6 +482,7 @@ export const followChannelRouteSchema: FastifySchema = {
     },
     400: ErrorResponseSchema,
     401: ErrorResponseSchema,
+    403: ErrorResponseSchema,
   },
 };
 
@@ -553,5 +610,67 @@ export const unbanUserRouteSchema: FastifySchema = {
     400: ErrorResponseSchema,
     401: ErrorResponseSchema,
     404: ErrorResponseSchema,
+  },
+};
+
+export const getLiveChannelsRouteSchema: FastifySchema = {
+  tags: ["Channels"],
+  summary: "List all currently broadcasting live channels",
+  description:
+    "Returns an array of channels currently on air with creator details and live status. When authenticated, filters out channels that have banned the requesting user.",
+  security: [{ bearerAuth: [] }, {}],
+  response: {
+    200: {
+      type: "object",
+      properties: {
+        channels: { type: "array", items: PublicUserSummarySchema },
+      },
+      required: ["channels"],
+    },
+    503: ErrorResponseSchema,
+  },
+};
+
+export const setChannelLiveRouteSchema: FastifySchema = {
+  tags: ["Channels"],
+  summary: "Update broadcast live status for the authenticated user's channel",
+  security: [{ bearerAuth: [] }],
+  body: {
+    type: "object",
+    required: ["isLive"],
+    properties: {
+      isLive: { type: "boolean" },
+    },
+  },
+  response: {
+    200: {
+      type: "object",
+      properties: {
+        channel: ChannelSchema,
+        message: { type: "string" },
+      },
+      required: ["channel", "message"],
+    },
+    400: ErrorResponseSchema,
+    401: ErrorResponseSchema,
+    404: ErrorResponseSchema,
+    503: ErrorResponseSchema,
+  },
+};
+
+export const getFollowingUsersRouteSchema: FastifySchema = {
+  tags: ["Users"],
+  summary: "List creators followed by the authenticated user with their live status",
+  security: [{ bearerAuth: [] }],
+  response: {
+    200: {
+      type: "object",
+      properties: {
+        following: { type: "array", items: PublicUserSummarySchema },
+      },
+      required: ["following"],
+    },
+    401: ErrorResponseSchema,
+    503: ErrorResponseSchema,
   },
 };

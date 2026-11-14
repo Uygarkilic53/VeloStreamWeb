@@ -302,53 +302,6 @@ export const INITIAL_LIVE_STREAMS: readonly StreamDirectoryItem[] = [
   },
 ];
 
-export const INITIAL_CHAT_MESSAGES: readonly ChatFeedItem[] = [
-  {
-    id: "msg_1",
-    author: "kyle_sys",
-    role: "Mod",
-    colorClass: "text-emerald-600 dark:text-emerald-400",
-    content: "Benchmark harness repo is pinned above. Slow mode is currently off.",
-    timestamp: "19:42",
-  },
-  {
-    id: "msg_2",
-    author: "dev_artur",
-    colorClass: "text-blue-600 dark:text-sky-400",
-    content: "Are you pooling byte slices with sync.Pool or pre-allocating a ring buffer?",
-    timestamp: "19:43",
-  },
-  {
-    id: "msg_3",
-    author: "elena_k",
-    colorClass: "text-amber-600 dark:text-amber-400",
-    content: "That tail-latency drop down to sub-millisecond under 50k clients is wild.",
-    timestamp: "19:43",
-  },
-  {
-    id: "msg_4",
-    author: "mira_codes",
-    role: "Creator",
-    colorClass: "text-[var(--vs-accent)]",
-    content: "Good question Artur — fixed ring buffers per room actor, zero heap escapes on broadcast.",
-    timestamp: "19:44",
-  },
-  {
-    id: "msg_5",
-    author: "sammy_t",
-    colorClass: "text-rose-600 dark:text-rose-400",
-    content: "1080p60 feed feels instant from here, latency looks around 300ms.",
-    timestamp: "19:44",
-  },
-  {
-    id: "msg_6",
-    author: "nils_go",
-    colorClass: "text-teal-600 dark:text-teal-400",
-    content: "How many goroutines stay resident when rooms go quiet?",
-    timestamp: "19:45",
-  },
-];
-
 export function formatViewerCount(count: number): string {
   if (count >= 1000) {
     return `${(count / 1000).toFixed(1).replace(/\.0$/, "")}K`;

@@ -71,7 +71,7 @@ describe("fastify authentication, account, channel, and moderation routes", () =
     expect(res.json().error).toBe("DATABASE_UNCONFIGURED");
   });
 
-  it("validates registration payloads and rejects duplicate handles/emails case-insensitively", async () => {
+  it("validates registration payloads with username terminology and rejects duplicate usernames/emails case-insensitively", async () => {
     const { app, jwtService } = await setupTestApp();
 
     const badRes = await app.inject({
@@ -86,9 +86,25 @@ describe("fastify authentication, account, channel, and moderation routes", () =
     expect(badRes.statusCode).toBe(400);
     const badBody = badRes.json();
     expect(badBody.error).toBe("VALIDATION_ERROR");
-    expect(badBody.fieldErrors.username).toBeDefined();
+    expect(badBody.fieldErrors.username?.[0]).toMatch(/username/i);
+    expect(badBody.fieldErrors.username?.[0]).not.toMatch(/channel handle/i);
     expect(badBody.fieldErrors.email).toBeDefined();
     expect(badBody.fieldErrors.password).toBeDefined();
+
+    const atPrefixRes = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: {
+        username: "@Deniz_K",
+        email: "deniz_at@velostream.dev",
+        password: "StrongPassword1",
+      },
+    });
+    expect(atPrefixRes.statusCode).toBe(400);
+    expect(atPrefixRes.json().error).toBe("VALIDATION_ERROR");
+    expect(atPrefixRes.json().fieldErrors.username?.[0]).toBe(
+      "Username may only contain letters, numbers, and underscores.",
+    );
 
     const reservedRes = await app.inject({
       method: "POST",
@@ -100,13 +116,13 @@ describe("fastify authentication, account, channel, and moderation routes", () =
       },
     });
     expect(reservedRes.statusCode).toBe(400);
-    expect(reservedRes.json().fieldErrors.username).toBeDefined();
+    expect(reservedRes.json().fieldErrors.username?.[0]).toBe("That username is reserved.");
 
     const okRes = await app.inject({
       method: "POST",
       url: "/api/v1/auth/register",
       payload: {
-        username: "@Deniz_K",
+        username: "Deniz_K",
         email: "Deniz@VeloStream.dev",
         password: "StrongPassword1",
         displayName: "Deniz Kaya",
@@ -140,6 +156,8 @@ describe("fastify authentication, account, channel, and moderation routes", () =
     });
     expect(dupUser.statusCode).toBe(409);
     expect(dupUser.json().error).toBe("USERNAME_TAKEN");
+    expect(dupUser.json().message).toBe("That username is already registered.");
+    expect(dupUser.json().fieldErrors.username?.[0]).toBe("That username is already registered.");
 
     const dupEmail = await app.inject({
       method: "POST",
@@ -152,6 +170,43 @@ describe("fastify authentication, account, channel, and moderation routes", () =
     });
     expect(dupEmail.statusCode).toBe(409);
     expect(dupEmail.json().error).toBe("EMAIL_TAKEN");
+
+    const blankUsernameRes = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: {
+        username: "   ",
+        email: "blank@velostream.dev",
+        password: "StrongPassword1",
+      },
+    });
+    expect(blankUsernameRes.statusCode).toBe(400);
+    expect(blankUsernameRes.json().error).toBe("VALIDATION_ERROR");
+    expect(blankUsernameRes.json().fieldErrors.username?.[0]).toBe("Username is required.");
+
+    const missingUsernameRes = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: {
+        email: "missing@velostream.dev",
+        password: "StrongPassword1",
+      },
+    });
+    expect(missingUsernameRes.statusCode).toBe(400);
+    expect(missingUsernameRes.json().error).toBe("VALIDATION_ERROR");
+    expect(missingUsernameRes.json().fieldErrors.username?.[0]).toBe("Username is required.");
+
+    const trimmedRes = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: {
+        username: "  alice_01  ",
+        email: "alice01@velostream.dev",
+        password: "StrongPassword1",
+      },
+    });
+    expect(trimmedRes.statusCode).toBe(201);
+    expect(trimmedRes.json().user.username).toBe("alice_01");
   });
 
   it("supports login by username or email, /me hydration, refresh rotation with replay protection, and logout", async () => {
@@ -262,7 +317,7 @@ describe("fastify authentication, account, channel, and moderation routes", () =
     });
     const tokenA = regA.json().accessToken as string;
 
-    await app.inject({
+    const regB = await app.inject({
       method: "POST",
       url: "/api/v1/auth/register",
       payload: {
@@ -271,6 +326,7 @@ describe("fastify authentication, account, channel, and moderation routes", () =
         password: "ViewerPassword1",
       },
     });
+    const tokenB = regB.json().accessToken as string;
 
     // Wrong current password rejected
     const badPw = await app.inject({
@@ -305,7 +361,42 @@ describe("fastify authentication, account, channel, and moderation routes", () =
     });
     expect(relogin.statusCode).toBe(200);
 
-    // Update profile including handle rename (re-signs access token)
+    // Reject @-prefixed username and duplicate username on profile update
+    const badProfileHandle = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/users/me",
+      headers: { Authorization: `Bearer ${tokenA}` },
+      payload: {
+        displayName: "Creator Alpha",
+        username: "@creator_alpha",
+        email: "alpha@velostream.dev",
+        bio: "Building low-latency video engines.",
+      },
+    });
+    expect(badProfileHandle.statusCode).toBe(400);
+    expect(badProfileHandle.json().error).toBe("VALIDATION_ERROR");
+    expect(badProfileHandle.json().fieldErrors.username?.[0]).toBe(
+      "Username may only contain letters, numbers, and underscores.",
+    );
+
+    const dupProfileUsername = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/users/me",
+      headers: { Authorization: `Bearer ${tokenA}` },
+      payload: {
+        displayName: "Creator Alpha",
+        username: "VIEWER_B",
+        email: "alpha@velostream.dev",
+        bio: "Building low-latency video engines.",
+      },
+    });
+    expect(dupProfileUsername.statusCode).toBe(409);
+    expect(dupProfileUsername.json().error).toBe("USERNAME_TAKEN");
+    expect(dupProfileUsername.json().fieldErrors.username?.[0]).toBe(
+      "That username is already taken.",
+    );
+
+    // Update profile including username rename (re-signs access token)
     const profileRes = await app.inject({
       method: "PATCH",
       url: "/api/v1/users/me",
@@ -322,6 +413,53 @@ describe("fastify authentication, account, channel, and moderation routes", () =
     expect(nextTokenA).toBeTypeOf("string");
     const updatedClaims = await jwtService.verifyAccessToken(nextTokenA);
     expect(updatedClaims.username).toBe("creator_alpha");
+
+    // Reserved username rejected on profile update
+    const reservedProfile = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/users/me",
+      headers: { Authorization: `Bearer ${nextTokenA}` },
+      payload: {
+        displayName: "Creator Alpha",
+        username: "admin",
+        email: "alpha@velostream.dev",
+        bio: "Building low-latency video engines.",
+      },
+    });
+    expect(reservedProfile.statusCode).toBe(400);
+    expect(reservedProfile.json().error).toBe("VALIDATION_ERROR");
+    expect(reservedProfile.json().fieldErrors.username?.[0]).toBe("That username is reserved.");
+
+    // Updating casing of own username succeeds without self-conflict
+    const caseOnlyRename = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/users/me",
+      headers: { Authorization: `Bearer ${nextTokenA}` },
+      payload: {
+        displayName: "Creator Alpha",
+        username: "Creator_Alpha",
+        email: "alpha@velostream.dev",
+        bio: "Building low-latency video engines.",
+      },
+    });
+    expect(caseOnlyRename.statusCode).toBe(200);
+    expect(caseOnlyRename.json().user.username).toBe("Creator_Alpha");
+    const caseClaims = await jwtService.verifyAccessToken(caseOnlyRename.json().accessToken as string);
+    expect(caseClaims.username).toBe("Creator_Alpha");
+
+    // Normalize back to lowercase for downstream assertions
+    const restoreLowercase = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/users/me",
+      headers: { Authorization: `Bearer ${caseOnlyRename.json().accessToken as string}` },
+      payload: {
+        displayName: "Creator Alpha",
+        username: "creator_alpha",
+        email: "alpha@velostream.dev",
+        bio: "Building low-latency video engines.",
+      },
+    });
+    expect(restoreLowercase.statusCode).toBe(200);
 
     // Update channel settings & rotate stream key
     const chRes = await app.inject({
@@ -355,6 +493,67 @@ describe("fastify authentication, account, channel, and moderation routes", () =
     expect(followRes.statusCode).toBe(200);
     expect(followRes.json().followedSlugs).toEqual(["mira_codes"]);
 
+    // Channel live status & live channels listing
+    const initialLive = await app.inject({
+      method: "GET",
+      url: "/api/v1/channels/live",
+    });
+    expect(initialLive.statusCode).toBe(200);
+    expect(initialLive.json().channels).toEqual([]);
+
+    const goLiveRes = await app.inject({
+      method: "POST",
+      url: "/api/v1/channels/me/live",
+      headers: { Authorization: `Bearer ${nextTokenA}` },
+      payload: { isLive: true },
+    });
+    expect(goLiveRes.statusCode).toBe(200);
+    expect(goLiveRes.json().channel.isLive).toBe(true);
+
+    const liveAfterRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/channels/live",
+    });
+    expect(liveAfterRes.statusCode).toBe(200);
+    expect(liveAfterRes.json().channels).toHaveLength(1);
+    expect(liveAfterRes.json().channels[0].username).toBe("creator_alpha");
+    expect(liveAfterRes.json().channels[0].isLive).toBe(true);
+
+    // Following endpoint returns followed creators with live status
+    const followAlpha = await app.inject({
+      method: "POST",
+      url: "/api/v1/users/me/follows/creator_alpha",
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    expect(followAlpha.statusCode).toBe(200);
+
+    const followingRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/users/me/following",
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    expect(followingRes.statusCode).toBe(200);
+    expect(followingRes.json().following).toHaveLength(1);
+    expect(followingRes.json().following[0].username).toBe("creator_alpha");
+    expect(followingRes.json().following[0].isLive).toBe(true);
+
+    // End live broadcast
+    const endLiveRes = await app.inject({
+      method: "POST",
+      url: "/api/v1/channels/me/live",
+      headers: { Authorization: `Bearer ${nextTokenA}` },
+      payload: { isLive: false },
+    });
+    expect(endLiveRes.statusCode).toBe(200);
+    expect(endLiveRes.json().channel.isLive).toBe(false);
+
+    const liveEndedRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/channels/live",
+    });
+    expect(liveEndedRes.statusCode).toBe(200);
+    expect(liveEndedRes.json().channels).toEqual([]);
+
     // Ban & unban validation + event publication
     const selfBan = await app.inject({
       method: "POST",
@@ -383,12 +582,79 @@ describe("fastify authentication, account, channel, and moderation routes", () =
     expect(publishedBans).toHaveLength(1);
     expect(publishedBans[0]?.reason).toBe("Spam links");
 
+    // Banned user can't access user from search
+    const searchWhileBanned = await app.inject({
+      method: "GET",
+      url: "/api/v1/users/search?q=creator_alpha",
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    expect(searchWhileBanned.statusCode).toBe(200);
+    expect(searchWhileBanned.json().users).toEqual([]);
+    expect(searchWhileBanned.json().relatedLiveUsers).toEqual([]);
+
+    // Banned user can't display user page (returns 403 USER_BANNED with ban details)
+    const profileWhileBanned = await app.inject({
+      method: "GET",
+      url: "/api/v1/users/creator_alpha",
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    expect(profileWhileBanned.statusCode).toBe(403);
+    expect(profileWhileBanned.json().error).toBe("USER_BANNED");
+    expect(profileWhileBanned.json().banned).toBe(true);
+    expect(profileWhileBanned.json().bannedBy).toBe("creator_alpha");
+    expect(profileWhileBanned.json().reason).toBe("Spam links");
+
+    // Banned user's /me includes creator in bannedFromSlugs
+    const meB = await app.inject({
+      method: "GET",
+      url: "/api/v1/auth/me",
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    expect(meB.statusCode).toBe(200);
+    expect(meB.json().user.bannedFromSlugs).toContain("creator_alpha");
+
+    // Banned user cannot follow the banning channel
+    const followWhileBanned = await app.inject({
+      method: "POST",
+      url: "/api/v1/users/me/follows/creator_alpha",
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    expect(followWhileBanned.statusCode).toBe(403);
+    expect(followWhileBanned.json().error).toBe("USER_BANNED");
+
+    // Unauthenticated user can still see creator profile
+    const profileAnon = await app.inject({
+      method: "GET",
+      url: "/api/v1/users/creator_alpha",
+    });
+    expect(profileAnon.statusCode).toBe(200);
+    expect(profileAnon.json().user.username).toBe("creator_alpha");
+
     const unbanRes = await app.inject({
       method: "DELETE",
       url: "/api/v1/moderation/bans/viewer_b",
       headers: { Authorization: `Bearer ${nextTokenA}` },
     });
     expect(unbanRes.statusCode).toBe(200);
+
+    // After unban, user can view profile and search again
+    const profileAfterUnban = await app.inject({
+      method: "GET",
+      url: "/api/v1/users/creator_alpha",
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    expect(profileAfterUnban.statusCode).toBe(200);
+    expect(profileAfterUnban.json().user.username).toBe("creator_alpha");
+
+    const searchAfterUnban = await app.inject({
+      method: "GET",
+      url: "/api/v1/users/search?q=creator_alpha",
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    expect(searchAfterUnban.statusCode).toBe(200);
+    expect(
+      searchAfterUnban.json().users.some((u: { username: string }) => u.username === "creator_alpha"),
+    ).toBe(true);
 
     const repeatUnban = await app.inject({
       method: "DELETE",
@@ -573,6 +839,93 @@ describe("fastify authentication, account, channel, and moderation routes", () =
     expect(deleteMock).toHaveBeenCalledWith(
       "https://res.cloudinary.com/demo/image/upload/v2/VeloStream/avatar/user_2.png",
     );
+  });
+
+  it("manages user appearance theme preference per user account independently", async () => {
+    const { app } = await setupTestApp();
+
+    // Register User A
+    const regA = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: {
+        username: "theme_user_a",
+        email: "theme_a@velostream.dev",
+        password: "StrongPassword1",
+      },
+    });
+    expect(regA.statusCode).toBe(201);
+    expect(regA.json().user.theme).toBe("light");
+    const tokenA = regA.json().accessToken as string;
+
+    // Register User B
+    const regB = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: {
+        username: "theme_user_b",
+        email: "theme_b@velostream.dev",
+        password: "StrongPassword1",
+      },
+    });
+    expect(regB.statusCode).toBe(201);
+    expect(regB.json().user.theme).toBe("light");
+    const tokenB = regB.json().accessToken as string;
+
+    // Unauthenticated theme update is rejected
+    const unauthTheme = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/users/me/theme",
+      payload: { theme: "dark" },
+    });
+    expect(unauthTheme.statusCode).toBe(401);
+
+    // Invalid theme value is rejected
+    const invalidTheme = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/users/me/theme",
+      headers: { Authorization: `Bearer ${tokenA}` },
+      payload: { theme: "neon_blue" },
+    });
+    expect(invalidTheme.statusCode).toBe(400);
+
+    // User A sets theme to dark
+    const updateThemeRes = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/users/me/theme",
+      headers: { Authorization: `Bearer ${tokenA}` },
+      payload: { theme: "dark" },
+    });
+    expect(updateThemeRes.statusCode).toBe(200);
+    expect(updateThemeRes.json().user.theme).toBe("dark");
+
+    // Hydrating /me for User A shows dark theme
+    const meA = await app.inject({
+      method: "GET",
+      url: "/api/v1/auth/me",
+      headers: { Authorization: `Bearer ${tokenA}` },
+    });
+    expect(meA.statusCode).toBe(200);
+    expect(meA.json().user.theme).toBe("dark");
+
+    // User B's theme remains light (independent user preference, not device cookie)
+    const meB = await app.inject({
+      method: "GET",
+      url: "/api/v1/auth/me",
+      headers: { Authorization: `Bearer ${tokenB}` },
+    });
+    expect(meB.statusCode).toBe(200);
+    expect(meB.json().user.theme).toBe("light");
+
+    // User A can also toggle back to light
+    const backToLight = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/users/me/theme",
+      headers: { Authorization: `Bearer ${tokenA}` },
+      payload: { theme: "light" },
+    });
+    expect(backToLight.statusCode).toBe(200);
+    expect(backToLight.json().user.theme).toBe("light");
   });
 });
 

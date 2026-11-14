@@ -35,6 +35,7 @@ import {
   LuSearch,
   LuSearchX,
   LuSend,
+  LuSettings,
   LuShieldAlert,
   LuShieldCheck,
   LuSlidersHorizontal,
@@ -94,6 +95,7 @@ export const SendIcon = createIcon(LuSend);
 export const MessageSquareIcon = createIcon(LuMessageSquare);
 export const BanIcon = createIcon(LuBan);
 export const LockIcon = createIcon(LuLock);
+export const SettingsIcon = createIcon(LuSettings);
 export const SlidersIcon = createIcon(LuSlidersHorizontal);
 export const GlobeIcon = createIcon(LuGlobe);
 export const UploadIcon = createIcon(LuUpload);

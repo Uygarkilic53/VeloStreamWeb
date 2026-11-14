@@ -4,10 +4,12 @@ import { createUserController } from "../controllers/user.controller.js";
 import {
   deleteAvatarRouteSchema,
   followChannelRouteSchema,
+  getFollowingUsersRouteSchema,
   publicUserProfileRouteSchema,
   searchUsersRouteSchema,
   unfollowChannelRouteSchema,
   updateProfileRouteSchema,
+  updateThemeRouteSchema,
   uploadAvatarRouteSchema,
 } from "../docs/openapi-schemas.js";
 
@@ -15,24 +17,41 @@ export async function registerUserRoutes(
   app: FastifyInstance,
   deps: ControllerDeps,
   requireAuth: preHandlerHookHandler,
+  optionalAuth?: preHandlerHookHandler,
 ): Promise<void> {
   const controller = createUserController(deps);
 
   app.get(
     "/api/v1/users/search",
-    { schema: searchUsersRouteSchema },
+    {
+      ...(optionalAuth ? { preHandler: optionalAuth } : {}),
+      schema: searchUsersRouteSchema,
+    },
     controller.searchUsers,
   );
   app.get(
     "/api/v1/users/:username",
-    { schema: publicUserProfileRouteSchema },
+    {
+      ...(optionalAuth ? { preHandler: optionalAuth } : {}),
+      schema: publicUserProfileRouteSchema,
+    },
     controller.getPublicProfile,
   );
 
+  app.get(
+    "/api/v1/users/me/following",
+    { preHandler: requireAuth, schema: getFollowingUsersRouteSchema },
+    controller.getFollowingUsers,
+  );
   app.patch(
     "/api/v1/users/me",
     { preHandler: requireAuth, schema: updateProfileRouteSchema },
     controller.updateProfile,
+  );
+  app.patch(
+    "/api/v1/users/me/theme",
+    { preHandler: requireAuth, schema: updateThemeRouteSchema },
+    controller.updateTheme,
   );
   app.post(
     "/api/v1/users/me/avatar",

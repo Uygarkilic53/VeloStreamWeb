@@ -25,6 +25,11 @@ import {
   type FieldErrorMap,
   type StreamCategory,
 } from "./auth-schemas";
+import {
+  clearRememberMeCookie,
+  getRememberMeCookie,
+  setRememberMeCookie,
+} from "./cookies";
 import { getFrontendEnv } from "./env";
 
 export type { StreamCategory } from "./auth-schemas";
@@ -43,11 +48,13 @@ export interface UserAccount {
   bio: string;
   avatarUrl: string | null;
   role: string;
+  theme: "light" | "dark";
   channelTitle: string;
   channelCategory: StreamCategory;
   streamKey: string;
   slowMode: boolean;
   bannedUsers: BannedChatUser[];
+  bannedFromSlugs: string[];
   followedSlugs: string[];
   accessToken: string | null;
   sessionKind: "backend" | "preview";
@@ -74,6 +81,7 @@ export interface AuthAttemptResult {
   error?: string;
   fieldErrors?: FieldErrorMap;
   backendUnavailable?: boolean;
+  fromApi?: boolean;
 }
 
 interface StoredSessionTokens {
@@ -115,20 +123,22 @@ function formatBanTimestamp(iso: string): string {
 }
 
 function buildPreviewAccount(username: string, email: string, displayName?: string): UserAccount {
-  const cleanHandle = username.replace(/^@/, "") || "deniz_k";
+  const cleanUsername = username.replace(/^@/, "") || "deniz_k";
   return {
-    id: `usr_${cleanHandle}`,
-    username: cleanHandle,
+    id: `usr_${cleanUsername}`,
+    username: cleanUsername,
     displayName: displayName?.trim() || "Deniz Kaya",
-    email: email.trim() || `${cleanHandle}@velostream.dev`,
+    email: email.trim() || `${cleanUsername}@velostream.dev`,
     bio: "Systems engineer building low-latency WebRTC pipelines and Go real-time chat services.",
     avatarUrl: null,
     role: "USER",
+    theme: "light",
     channelTitle: "Late night Rust & Go live coding — zero-allocation chat hub",
     channelCategory: "Programming",
     streamKey: generateLocalStreamKey(),
     slowMode: true,
     bannedUsers: DEFAULT_BANNED_USERS,
+    bannedFromSlugs: [],
     followedSlugs: ["mira_codes", "dev_alex", "sarah_j", "kuro_fps"],
     accessToken: null,
     sessionKind: "preview",
@@ -147,6 +157,7 @@ function mapBackendProfileToUserAccount(
     bio: profile.bio ?? "",
     avatarUrl: profile.avatarUrl ?? null,
     role: profile.role ?? "USER",
+    theme: profile.theme ?? "light",
     channelTitle: profile.channel?.title ?? `${profile.username}'s live broadcast`,
     channelCategory: profile.channel?.category ?? "Programming",
     streamKey: profile.channel?.streamKey ?? "",
@@ -156,6 +167,7 @@ function mapBackendProfileToUserAccount(
       reason: ban.reason,
       bannedAtLabel: formatBanTimestamp(ban.bannedAt),
     })),
+    bannedFromSlugs: profile.bannedFromSlugs ?? [],
     followedSlugs: profile.followedSlugs ?? [],
     accessToken,
     sessionKind: "backend",
@@ -262,14 +274,20 @@ async function parseErrorResponse(response: Response): Promise<{
   };
 }
 
-interface AuthContextValue {
+export interface AuthContextValue {
   user: UserAccount | null;
   isSubmitting: boolean;
   isHydrating: boolean;
   signIn: (input: SignInInput) => Promise<AuthAttemptResult>;
   signUp: (input: SignUpInput) => Promise<AuthAttemptResult>;
-  enterPreviewSession: (overrides?: { username?: string; email?: string }) => void;
+  enterPreviewSession: (overrides?: {
+    username?: string;
+    email?: string;
+    displayName?: string;
+    rememberSession?: boolean;
+  }) => void;
   signOut: () => Promise<void>;
+  updateTheme: (theme: "light" | "dark") => Promise<AuthAttemptResult>;
   updateProfile: (patch: {
     displayName: string;
     username: string;
@@ -292,9 +310,11 @@ interface AuthContextValue {
   unbanUser: (username: string) => Promise<AuthAttemptResult>;
   banUser: (username: string, reason?: string) => Promise<AuthAttemptResult>;
   toggleFollow: (slug: string) => Promise<AuthAttemptResult>;
+  markChannelBanned: (slug: string) => void;
 }
 
-const AuthContext = createContext<AuthContextValue | null>(null);
+// eslint-disable-next-line react-refresh/only-export-components
+export const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserAccount | null>(null);
@@ -345,7 +365,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       rememberSession: current.rememberSession,
     };
     persistTokens(updatedTokens);
-    setUser(mapBackendProfileToUserAccount(parsed.data.user, accessToken));
+    const updatedUser = mapBackendProfileToUserAccount(parsed.data.user, accessToken);
+    if (current.rememberSession) {
+      setRememberMeCookie({
+        user: updatedUser,
+        accessToken,
+        refreshToken,
+        rememberSession: true,
+      });
+    }
+    setUser(updatedUser);
     return updatedTokens;
   }, [persistTokens]);
 
@@ -382,15 +411,55 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     async function restoreSession() {
+      const rememberedCookie = getRememberMeCookie();
       const stored = readStoredTokens();
-      if (!stored) {
+
+      // If we have a remembered cookie with user details, hydrate user immediately!
+      if (rememberedCookie?.user) {
+        setUser(rememberedCookie.user as UserAccount);
+        if (rememberedCookie.accessToken && rememberedCookie.refreshToken) {
+          tokensRef.current = {
+            accessToken: rememberedCookie.accessToken,
+            refreshToken: rememberedCookie.refreshToken,
+            rememberSession: true,
+          };
+        } else if (stored) {
+          tokensRef.current = stored;
+        }
+      } else if (stored) {
+        tokensRef.current = stored;
+      }
+
+      if (!tokensRef.current?.accessToken && !tokensRef.current?.refreshToken) {
+        // If already restored from cookie (such as a remembered preview session or offline account)
+        if (rememberedCookie?.user) {
+          if (!cancelled) {
+            setIsHydrating(false);
+          }
+          return;
+        }
+
+        if (typeof window !== "undefined") {
+          try {
+            const previewRaw =
+              window.localStorage.getItem("velostream_preview_user") ||
+              window.sessionStorage.getItem("velostream_preview_user");
+            if (previewRaw) {
+              const previewObj = JSON.parse(previewRaw) as UserAccount;
+              if (previewObj && previewObj.sessionKind === "preview") {
+                setUser(previewObj);
+              }
+            }
+          } catch {
+            // Ignore sessionStorage parse errors
+          }
+        }
         if (!cancelled) {
           setIsHydrating(false);
         }
         return;
       }
 
-      tokensRef.current = stored;
       try {
         const response = await authorizedFetch("/api/v1/auth/me", { method: "GET" });
         if (cancelled) return;
@@ -398,18 +467,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const raw: unknown = await response.json();
           const parsed = z.object({ user: BackendUserProfileSchema }).safeParse(raw);
           if (parsed.success) {
-            setUser(
-              mapBackendProfileToUserAccount(
-                parsed.data.user,
-                tokensRef.current?.accessToken ?? stored.accessToken,
-              ),
+            const currentToken = tokensRef.current?.accessToken ?? stored?.accessToken ?? null;
+            const updatedUser = mapBackendProfileToUserAccount(
+              parsed.data.user,
+              currentToken,
             );
+            setUser(updatedUser);
+            if (tokensRef.current?.rememberSession) {
+              setRememberMeCookie({
+                user: updatedUser,
+                accessToken: currentToken,
+                refreshToken: tokensRef.current.refreshToken,
+                rememberSession: true,
+              });
+            }
           }
         } else if (response.status === 401 || response.status === 403) {
           persistTokens(null);
+          clearRememberMeCookie();
+          setUser(null);
         }
       } catch {
-        // Keep stored tokens if backend is temporarily unreachable; user remains signed out until online.
+        // Core API server is shut down or temporarily unreachable.
+        // If the user clicked "Remember me", keep them signed in from the cookie!
+        if (rememberedCookie?.user) {
+          setUser(rememberedCookie.user as UserAccount);
+        }
       } finally {
         if (!cancelled) {
           setIsHydrating(false);
@@ -422,6 +505,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       cancelled = true;
     };
   }, [authorizedFetch, persistTokens]);
+
+  // Sync updates to user profile/theme/channel into the remember me cookie when active
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+    const isRemembered =
+      tokensRef.current?.rememberSession ||
+      Boolean(getRememberMeCookie()?.rememberSession);
+
+    if (isRemembered) {
+      setRememberMeCookie({
+        user,
+        accessToken: tokensRef.current?.accessToken ?? user.accessToken,
+        refreshToken: tokensRef.current?.refreshToken ?? null,
+        rememberSession: true,
+      });
+    }
+  }, [user]);
 
   const signIn = useCallback(
     async ({ identifier, password, rememberSession = true }: SignInInput): Promise<AuthAttemptResult> => {
@@ -454,6 +556,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             error: errInfo.message,
             ...(errInfo.fieldErrors ? { fieldErrors: errInfo.fieldErrors } : {}),
             backendUnavailable: errInfo.backendUnavailable,
+            fromApi: true,
           };
         }
 
@@ -471,7 +574,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             rememberSession: validation.data.rememberSession,
           });
         }
-        setUser(mapBackendProfileToUserAccount(parsed.data.user, accessToken));
+        const userAccount = mapBackendProfileToUserAccount(parsed.data.user, accessToken);
+        if (validation.data.rememberSession) {
+          setRememberMeCookie({
+            user: userAccount,
+            accessToken,
+            refreshToken: parsed.data.refreshToken ?? null,
+            rememberSession: true,
+          });
+        } else {
+          clearRememberMeCookie();
+        }
+        setUser(userAccount);
         return {
           ok: true,
           message: parsed.data.message ?? "Signed in successfully.",
@@ -533,6 +647,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             error: errInfo.message,
             ...(errInfo.fieldErrors ? { fieldErrors: errInfo.fieldErrors } : {}),
             backendUnavailable: errInfo.backendUnavailable,
+            fromApi: true,
           };
         }
 
@@ -550,7 +665,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             rememberSession: validation.data.rememberSession,
           });
         }
-        setUser(mapBackendProfileToUserAccount(parsed.data.user, accessToken));
+        const userAccount = mapBackendProfileToUserAccount(parsed.data.user, accessToken);
+        if (validation.data.rememberSession) {
+          setRememberMeCookie({
+            user: userAccount,
+            accessToken,
+            refreshToken: parsed.data.refreshToken ?? null,
+            rememberSession: true,
+          });
+        } else {
+          clearRememberMeCookie();
+        }
+        setUser(userAccount);
         return {
           ok: true,
           message: parsed.data.message ?? "Account created successfully.",
@@ -570,15 +696,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const enterPreviewSession = useCallback(
-    (overrides?: { username?: string; email?: string }) => {
+    (overrides?: {
+      username?: string;
+      email?: string;
+      displayName?: string;
+      rememberSession?: boolean;
+    }) => {
       persistTokens(null);
-      setUser(
-        buildPreviewAccount(
-          overrides?.username ?? "deniz_k",
-          overrides?.email ?? "deniz@velostream.dev",
-          overrides?.username ? overrides.username : "Deniz Kaya",
-        ),
+      const cleanUsername = overrides?.username?.replace(/^@/, "").trim() || "deniz_k";
+      const account = buildPreviewAccount(
+        cleanUsername,
+        overrides?.email?.trim() || `${cleanUsername}@velostream.dev`,
+        overrides?.displayName || (overrides?.username ? overrides.username : undefined),
       );
+      const shouldRemember = overrides?.rememberSession ?? true;
+      if (typeof window !== "undefined") {
+        try {
+          if (shouldRemember) {
+            window.localStorage.setItem("velostream_preview_user", JSON.stringify(account));
+            window.sessionStorage.removeItem("velostream_preview_user");
+          } else {
+            window.sessionStorage.setItem("velostream_preview_user", JSON.stringify(account));
+            window.localStorage.removeItem("velostream_preview_user");
+          }
+        } catch {
+          // Ignore storage errors
+        }
+      }
+      if (shouldRemember) {
+        setRememberMeCookie({
+          user: account,
+          accessToken: null,
+          refreshToken: null,
+          rememberSession: true,
+        });
+      } else {
+        clearRememberMeCookie();
+      }
+      setUser(account);
       toast.info("Entered local preview session.");
     },
     [persistTokens],
@@ -588,7 +743,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const currentSessionKind = user?.sessionKind;
     const refreshToken = tokensRef.current?.refreshToken;
     persistTokens(null);
+    clearRememberMeCookie();
     setUser(null);
+
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.removeItem("velostream_preview_user");
+        window.sessionStorage.removeItem("velostream_preview_user");
+      } catch {
+        // Ignore storage errors
+      }
+    }
 
     if (currentSessionKind === "preview" || !refreshToken) {
       toast.info("Signed out of local preview session.");
@@ -701,6 +866,71 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     },
     [authorizedFetch, persistTokens, user],
+  );
+
+  const updateTheme = useCallback(
+    async (nextTheme: "light" | "dark"): Promise<AuthAttemptResult> => {
+      if (!user) {
+        return { ok: false, error: "Sign in before changing appearance preferences." };
+      }
+
+      if (user.sessionKind === "preview") {
+        setUser((prev) => {
+          if (!prev) return prev;
+          const next = { ...prev, theme: nextTheme };
+          if (typeof window !== "undefined") {
+            try {
+              window.sessionStorage.setItem("velostream_preview_user", JSON.stringify(next));
+            } catch {
+              // Ignore storage errors
+            }
+          }
+          return next;
+        });
+        return {
+          ok: true,
+          message: `Appearance preference set to ${nextTheme === "dark" ? "Dark" : "Light"} Mode.`,
+        };
+      }
+
+      try {
+        const response = await authorizedFetch("/api/v1/users/me/theme", {
+          method: "PATCH",
+          body: JSON.stringify({ theme: nextTheme }),
+        });
+        if (!response.ok) {
+          const errInfo = await parseErrorResponse(response);
+          return {
+            ok: false,
+            error: errInfo.message,
+            ...(errInfo.fieldErrors ? { fieldErrors: errInfo.fieldErrors } : {}),
+          };
+        }
+
+        const raw: unknown = await response.json();
+        const parsed = z
+          .object({
+            user: BackendUserProfileSchema,
+            message: z.string().optional(),
+          })
+          .safeParse(raw);
+        if (!parsed.success) {
+          return { ok: false, error: "Unexpected response from appearance preference service." };
+        }
+
+        const token = tokensRef.current?.accessToken ?? user.accessToken;
+        setUser(mapBackendProfileToUserAccount(parsed.data.user, token));
+        return {
+          ok: true,
+          message:
+            parsed.data.message ??
+            `Appearance preference set to ${nextTheme === "dark" ? "Dark" : "Light"} Mode.`,
+        };
+      } catch {
+        return { ok: false, error: "Could not reach Core API to update appearance preference." };
+      }
+    },
+    [authorizedFetch, user],
   );
 
   const uploadAvatar = useCallback(
@@ -1221,6 +1451,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [authorizedFetch, user],
   );
 
+  const markChannelBanned = useCallback((slug: string) => {
+    const clean = slug.trim().replace(/^@/, "").toLowerCase();
+    if (!clean) return;
+    setUser((prev) => {
+      if (!prev) return prev;
+      if (prev.bannedFromSlugs.includes(clean)) return prev;
+      return {
+        ...prev,
+        bannedFromSlugs: [...prev.bannedFromSlugs, clean],
+        followedSlugs: prev.followedSlugs.filter((s) => s.toLowerCase() !== clean),
+      };
+    });
+  }, []);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -1230,6 +1474,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signUp,
       enterPreviewSession,
       signOut,
+      updateTheme,
       updateProfile,
       uploadAvatar,
       removeAvatar,
@@ -1239,6 +1484,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       unbanUser,
       banUser,
       toggleFollow,
+      markChannelBanned,
     }),
     [
       user,
@@ -1248,6 +1494,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signUp,
       enterPreviewSession,
       signOut,
+      updateTheme,
       updateProfile,
       uploadAvatar,
       removeAvatar,
@@ -1257,6 +1504,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       unbanUser,
       banUser,
       toggleFollow,
+      markChannelBanned,
     ],
   );
 

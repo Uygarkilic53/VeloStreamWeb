@@ -4,6 +4,7 @@ export interface FrontendEnv {
   realtimeWsUrl: string;
   hlsBaseUrl: string;
   whipBaseUrl: string;
+  whepBaseUrl: string;
 }
 
 export function getFrontendEnv(): FrontendEnv {
@@ -13,6 +14,10 @@ export function getFrontendEnv(): FrontendEnv {
     realtimeWsUrl: import.meta.env.VITE_REALTIME_WS_URL || "ws://localhost:3002",
     hlsBaseUrl: import.meta.env.VITE_HLS_BASE_URL || "http://localhost:8888",
     whipBaseUrl: import.meta.env.VITE_WHIP_BASE_URL || "http://localhost:8889",
+    whepBaseUrl:
+      import.meta.env.VITE_WHEP_BASE_URL ||
+      import.meta.env.VITE_WHIP_BASE_URL ||
+      "http://localhost:8889",
   };
 }
 

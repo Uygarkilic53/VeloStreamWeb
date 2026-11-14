@@ -54,3 +54,27 @@ export function requireAuthMiddleware(jwtService?: AsymmetricJwtService): preHan
     }
   };
 }
+
+export function optionalAuthMiddleware(jwtService?: AsymmetricJwtService): preHandlerHookHandler {
+  return async function optionalAuth(request: FastifyRequest): Promise<void> {
+    if (!jwtService) {
+      return;
+    }
+
+    const token = extractBearerToken(request);
+    if (!token) {
+      return;
+    }
+
+    try {
+      const claims = await jwtService.verifyAccessToken(token);
+      request.authUser = {
+        id: claims.sub,
+        username: claims.username,
+        role: claims.role,
+      };
+    } catch {
+      // Ignore expired or invalid tokens on public routes.
+    }
+  };
+}

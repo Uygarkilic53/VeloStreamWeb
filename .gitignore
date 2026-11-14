@@ -37,3 +37,7 @@ npm-debug.log*
 Thumbs.db
 
 .agents
+
+docs/
+AGENTS.md
+dockercommands.md

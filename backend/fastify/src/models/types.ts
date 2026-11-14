@@ -19,6 +19,7 @@ export interface UserRecord {
   avatarUrl: string | null;
   passwordHash: string;
   role: UserRole;
+  theme: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -89,9 +90,11 @@ export interface AccountProfileView {
   bio: string;
   avatarUrl: string | null;
   role: UserRole;
+  theme: "light" | "dark";
   createdAt: string;
   channel: ChannelView | null;
   bannedUsers: ChannelBanView[];
+  bannedFromSlugs: string[];
   followedSlugs: string[];
 }
 
@@ -104,6 +107,7 @@ export interface CreateUserWithChannelInput {
   channelTitle: string;
   channelCategory?: StreamCategory;
   role?: UserRole;
+  theme?: "light" | "dark";
 }
 
 export interface UpdateUserProfileInput {
@@ -113,6 +117,7 @@ export interface UpdateUserProfileInput {
   email: string;
   bio: string;
   avatarUrl?: string | null;
+  theme?: "light" | "dark";
 }
 
 export interface UpdateChannelSettingsInput {
@@ -167,8 +172,10 @@ export interface UserModelContract {
   findById(userId: string): Promise<UserRecord | null>;
   findProfileById(userId: string): Promise<AccountProfileView | null>;
   findPublicByUsername(username: string): Promise<PublicUserSummary | null>;
-  searchUsers(query: string, limit?: number): Promise<SearchUsersResult>;
+  searchUsers(query: string, limit?: number, excludeUserId?: string): Promise<SearchUsersResult>;
+  getFollowedUsers(userId: string): Promise<PublicUserSummary[]>;
   updateProfile(input: UpdateUserProfileInput): Promise<AccountProfileView>;
+  updateTheme(userId: string, theme: "light" | "dark"): Promise<AccountProfileView>;
   updateAvatarUrl(userId: string, avatarUrl: string | null): Promise<AccountProfileView>;
   updatePasswordHash(userId: string, passwordHash: string): Promise<void>;
 }
@@ -178,7 +185,10 @@ export interface ChannelModelContract {
   rotateStreamKey(ownerId: string, nextStreamKey: string): Promise<string>;
   banUserByUsername(input: UpsertChannelBanInput): Promise<UpsertChannelBanResult>;
   unbanUserByUsername(ownerId: string, targetUsername: string): Promise<boolean>;
+  isUserBanned(channelSlugOrUsername: string, userId: string): Promise<{ isBanned: boolean; reason?: string }>;
   setFollowState(userId: string, channelSlug: string, follow: boolean): Promise<string[]>;
+  getLiveChannels(excludeUserId?: string): Promise<PublicUserSummary[]>;
+  setLiveStatus(ownerId: string, isLive: boolean): Promise<ChannelView>;
 }
 
 export interface RefreshTokenModelContract {

@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Document from "../../index";
-import { clearPreferenceCookies, acceptCookiesWithTheme } from "./cookies";
+import { clearPreferenceCookies } from "./cookies";
 
 describe("TSX root Document (index.tsx)", () => {
   beforeEach(() => {
@@ -27,22 +27,16 @@ describe("TSX root Document (index.tsx)", () => {
     expect(html).toMatch(/<body class="[^"]*m-2[^"]*sm:m-4/);
   });
 
-  it("emits a working pre-mount bootstrap script that defaults to light and honors accepted dark cookie", () => {
+  it("emits a working pre-mount bootstrap script that defaults to light mode", () => {
     const html = renderToStaticMarkup(<Document />);
     const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
     expect(scriptMatch?.[1]).toBeTruthy();
 
     const runBootstrapScript = new Function(scriptMatch?.[1] ?? "");
 
-    // Without consent cookies, Light Mode is enforced.
+    // Pre-mount bootstrap guarantees light mode default
     runBootstrapScript();
     expect(document.documentElement.classList.contains("dark")).toBe(false);
     expect(document.documentElement.dataset.theme).toBe("light");
-
-    // With accepted dark theme cookie, Dark Mode activates synchronously before mount.
-    acceptCookiesWithTheme("dark");
-    runBootstrapScript();
-    expect(document.documentElement.classList.contains("dark")).toBe(true);
-    expect(document.documentElement.dataset.theme).toBe("dark");
   });
 });

@@ -4,6 +4,7 @@ package models
 const (
 	FrameTypeChatMessage      = "chat.message"
 	FrameTypeStreamStatus     = "stream.status"
+	FrameTypeStreamSnapshot   = "stream.snapshot"
 	FrameTypeViewerCount      = "viewer.count"
 	FrameTypeModerationBanned = "moderation.banned"
 	FrameTypeError            = "error"
@@ -16,6 +17,12 @@ type AuthClaims struct {
 	Role     string
 }
 
+type StreamSnapshotEvent struct {
+	ChannelID   string `json:"channelId"`
+	SnapshotURL string `json:"snapshotUrl"`
+	UpdatedAt   string `json:"updatedAt"`
+}
+
 type ModerationBanEvent struct {
 	ChannelID string `json:"channelId"`
 	UserID    string `json:"userId"`
@@ -25,7 +32,6 @@ type ModerationBanEvent struct {
 
 type StreamStatusEvent struct {
 	ChannelID string `json:"channelId"`
-	StreamKey string `json:"streamKey"`
 	Status    string `json:"status"`
 	UpdatedAt string `json:"updatedAt"`
 }
@@ -56,6 +62,9 @@ type MediaMTXAuthPayload struct {
 	Protocol string `json:"protocol"`
 	User     string `json:"user"`
 	Password string `json:"password"`
+	Token    string `json:"token"`
+	JWT      string `json:"jwt"`
+	Query    string `json:"query"`
 }
 
 type MediaMTXEventPayload struct {

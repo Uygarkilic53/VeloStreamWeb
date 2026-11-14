@@ -12,7 +12,7 @@ export type StreamCategory = (typeof STREAM_CATEGORIES)[number];
 
 export const USERNAME_REGEX = /^[a-zA-Z0-9_]+$/;
 
-export const RESERVED_HANDLES = new Set([
+export const RESERVED_USERNAMES = new Set([
   "admin",
   "administrator",
   "root",
@@ -37,20 +37,16 @@ export const RESERVED_HANDLES = new Set([
 export const UsernameFieldSchema = z
   .string()
   .trim()
-  .transform((val) => val.replace(/^@/, ""))
-  .pipe(
-    z
-      .string()
-      .min(3, "Channel handle must be at least 3 characters.")
-      .max(32, "Channel handle must be at most 32 characters.")
-      .regex(
-        USERNAME_REGEX,
-        "Use only letters, numbers, and underscores for your channel handle.",
-      )
-      .refine(
-        (val) => !RESERVED_HANDLES.has(val.toLowerCase()),
-        "That channel handle is reserved.",
-      ),
+  .min(1, "Username is required.")
+  .min(3, "Username must be at least 3 characters.")
+  .max(32, "Username must be at most 32 characters.")
+  .regex(
+    USERNAME_REGEX,
+    "Username may only contain letters, numbers, and underscores.",
+  )
+  .refine(
+    (val) => !RESERVED_USERNAMES.has(val.toLowerCase()),
+    "That username is reserved.",
   );
 
 export const EmailFieldSchema = z
@@ -223,8 +219,10 @@ export const BackendUserProfileSchema = z.object({
   bio: z.string().optional(),
   avatarUrl: z.string().url().nullable().optional(),
   role: z.string().optional(),
+  theme: z.enum(["light", "dark"]).optional().default("light"),
   channel: BackendChannelSchema.nullable().optional(),
   bannedUsers: z.array(BackendChannelBanSchema).optional(),
+  bannedFromSlugs: z.array(z.string()).optional().default([]),
   followedSlugs: z.array(z.string()).optional(),
 });
 

@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/velostream/fiber/models"
 	"github.com/velostream/fiber/routes"
 	"github.com/velostream/fiber/services"
 )
@@ -16,6 +17,7 @@ type Options struct {
 	Hub                *services.HubService
 	JwtService         *services.JwtService
 	MediaWebhookSecret string
+	StreamRepo         models.StreamRepository
 }
 
 // New builds and configures the Fiber app without calling Listen (mirrors Fastify's src/app.ts).
@@ -55,6 +57,7 @@ func New(opts Options) *fiber.App {
 		Hub:                opts.Hub,
 		JwtService:         opts.JwtService,
 		MediaWebhookSecret: opts.MediaWebhookSecret,
+		StreamRepo:         opts.StreamRepo,
 	})
 
 	return fiberApp

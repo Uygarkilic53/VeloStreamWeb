@@ -132,6 +132,95 @@ describe("fastify integration (.inject())", () => {
     expect(missingRes.statusCode).toBe(404);
   });
 
+  it("excludes the authenticated user from GET /api/v1/users/search results (both users and relatedLiveUsers)", async () => {
+    const models = new MemoryModels();
+    const passwordHash = await hashPassword("StrongPass123");
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519", {
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" },
+    });
+    const jwtService = new AsymmetricJwtService({
+      algorithm: "EdDSA",
+      issuer: "velostream-fastify",
+      audience: "velostream-clients",
+      privateKeyPem: privateKey,
+      publicKeyPem: publicKey,
+    });
+
+    const mira = await models.users.createWithChannel({
+      username: "mira_dev",
+      displayName: "Mira Vance",
+      email: "mira@velostream.dev",
+      passwordHash,
+      streamKey: "live_secret_mira",
+      channelTitle: "Rust graphics engine live",
+      channelCategory: "Programming",
+    });
+    const nils = await models.users.createWithChannel({
+      username: "nils_dev",
+      displayName: "Nils Lindqvist",
+      email: "nils@velostream.dev",
+      passwordHash,
+      streamKey: "live_secret_nils",
+      channelTitle: "Distributed Raft in Go",
+      channelCategory: "Programming",
+    });
+
+    const state = (models as unknown as { state: { channels: Map<string, { ownerId: string; isLive: boolean }> } }).state;
+    for (const ch of state.channels.values()) {
+      if (ch.ownerId === mira.id || ch.ownerId === nils.id) {
+        ch.isLive = true;
+      }
+    }
+
+    const app = await buildApp({ models, jwtService });
+    appsToClose.push(app);
+
+    const miraToken = await jwtService.signAccessToken(
+      { sub: mira.id, username: mira.username, role: mira.role },
+      "15m",
+    );
+
+    // Searching for exact own username (including @-prefixed and display name) excludes self from both users and relatedLiveUsers
+    for (const q of ["mira_dev", "%40mira_dev", "Mira%20Vance", "Programming"]) {
+      const selfSearch = await app.inject({
+        method: "GET",
+        url: `/api/v1/users/search?q=${q}`,
+        headers: { Authorization: `Bearer ${miraToken}` },
+      });
+      expect(selfSearch.statusCode).toBe(200);
+      expect(
+        selfSearch.json().users.some((u: { id: string }) => u.id === mira.id),
+      ).toBe(false);
+      expect(
+        selfSearch.json().relatedLiveUsers.some((u: { id: string }) => u.id === mira.id),
+      ).toBe(false);
+    }
+
+    // Searching a shared substring returns other matching users, still excluding self
+    const sharedSearch = await app.inject({
+      method: "GET",
+      url: "/api/v1/users/search?q=dev",
+      headers: { Authorization: `Bearer ${miraToken}` },
+    });
+    expect(sharedSearch.statusCode).toBe(200);
+    expect(sharedSearch.json().users.map((u: { username: string }) => u.username)).toEqual(["nils_dev"]);
+    expect(
+      sharedSearch.json().relatedLiveUsers.map((u: { username: string }) => u.username),
+    ).toEqual(["nils_dev"]);
+
+    // Invalid/expired token on public search still works anonymously without 401
+    const invalidTokenSearch = await app.inject({
+      method: "GET",
+      url: "/api/v1/users/search?q=mira_dev",
+      headers: { Authorization: "Bearer invalid.jwt.token" },
+    });
+    expect(invalidTokenSearch.statusCode).toBe(200);
+    expect(invalidTokenSearch.json().users.map((u: { username: string }) => u.username)).toEqual([
+      "mira_dev",
+    ]);
+  });
+
   it("serves public JWKS on /.well-known/jwks.json and 503 when unconfigured", async () => {
     const unconfiguredApp = await buildApp();
     appsToClose.push(unconfiguredApp);
@@ -178,11 +267,29 @@ describe("fastify integration (.inject())", () => {
     expect(spec.openapi).toMatch(/^3\./);
     expect(spec.paths["/healthz"]).toBeUndefined();
     expect(spec.paths["/api/v1/auth/register"]).toBeDefined();
+    expect(
+      spec.paths["/api/v1/auth/register"].post.requestBody.content["application/json"].schema
+        .properties.username.pattern,
+    ).toBe("^[a-zA-Z0-9_]+$");
+    expect(
+      spec.paths["/api/v1/users/me"].patch.requestBody.content["application/json"].schema
+        .properties.username.pattern,
+    ).toBe("^[a-zA-Z0-9_]+$");
     expect(spec.paths["/api/v1/auth/login"]).toBeDefined();
     expect(spec.paths["/api/v1/auth/logout"]).toBeDefined();
     expect(spec.paths["/api/v1/users/search"]).toBeDefined();
     expect(spec.paths["/api/v1/users/{username}"]).toBeDefined();
+    expect(spec.paths["/api/v1/users/{username}"].get.responses["403"]).toBeDefined();
+    expect(spec.paths["/api/v1/users/me/follows/{slug}"].post.responses["403"]).toBeDefined();
     expect(spec.paths["/api/v1/users/me/avatar"]).toBeDefined();
+    expect(spec.paths["/api/v1/channels/live"]).toBeDefined();
+    expect(spec.paths["/api/v1/channels/me/live"]).toBeDefined();
+    expect(spec.paths["/api/v1/users/me/following"]).toBeDefined();
+    expect(spec.paths["/api/v1/users/me/theme"]).toBeDefined();
+    expect(
+      spec.paths["/api/v1/users/me/theme"].patch.requestBody.content["application/json"].schema
+        .properties.theme.enum,
+    ).toEqual(["light", "dark"]);
     expect(
       spec.paths["/api/v1/users/me/avatar"].post.requestBody.content["multipart/form-data"].schema
         .properties.avatar.format,

@@ -1,14 +1,12 @@
 import { COOKIE_DISCLOSURES } from "../lib/cookies";
 import { useTheme } from "../lib/theme";
-import { MoonIcon, ShieldIcon, SunIcon } from "./Icons";
+import { ShieldIcon } from "./Icons";
 import { VeloStreamLogo } from "./VeloStreamLogo";
 
 export function CookieConsentGate() {
   const {
-    theme,
     cookiesAccepted,
     isCookieDialogOpen,
-    setTheme,
     acceptCookies,
     closeCookieSettings,
     revokeCookies,
@@ -29,39 +27,6 @@ export function CookieConsentGate() {
       <div className="w-full max-w-xl rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-6 shadow-xl">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--vs-border)] pb-4">
           <VeloStreamLogo size={26} badge="Cookie Notice" />
-
-          <div
-            className="inline-flex items-center rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] p-0.5"
-            role="group"
-            aria-label="Preview appearance theme"
-          >
-            <button
-              type="button"
-              onClick={() => setTheme("light")}
-              aria-pressed={theme === "light"}
-              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                theme === "light"
-                  ? "bg-[var(--vs-surface)] text-[var(--vs-text)] shadow-xs"
-                  : "text-[var(--vs-text-muted)] hover:text-[var(--vs-text)]"
-              }`}
-            >
-              <SunIcon className="h-3.5 w-3.5" />
-              Light
-            </button>
-            <button
-              type="button"
-              onClick={() => setTheme("dark")}
-              aria-pressed={theme === "dark"}
-              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                theme === "dark"
-                  ? "bg-[var(--vs-surface)] text-[var(--vs-text)] shadow-xs"
-                  : "text-[var(--vs-text-muted)] hover:text-[var(--vs-text)]"
-              }`}
-            >
-              <MoonIcon className="h-3.5 w-3.5" />
-              Dark
-            </button>
-          </div>
         </div>
 
         <div className="mt-4 space-y-4">
@@ -77,8 +42,8 @@ export function CookieConsentGate() {
               className="text-sm leading-relaxed text-[var(--vs-text-muted)]"
             >
               Before you enter the live directory, review the minimal first-party cookies we store.
-              Even if you browse without signing in, accepting cookies lets us remember whether you
-              activated Light Mode or Dark Mode across visits.
+              We use essential cookies to remember your consent decision across visits and to keep
+              you signed in on this device when you select &apos;Remember me&apos;.
             </p>
           </div>
 
@@ -112,7 +77,9 @@ export function CookieConsentGate() {
             <ShieldIcon className="mt-0.5 h-4 w-4 shrink-0 text-[var(--vs-ok)]" />
             <span>
               Zero ad trackers, zero third-party analytics, and zero donation or monetization
-              tracking cookies. Theme cookies are only saved after you accept.
+              tracking cookies. Essential session cookies are only created when you select
+              &apos;Remember me&apos; to keep you signed in across visits and server restarts, and
+              theme preferences are saved to your account.
             </span>
           </div>
         </div>

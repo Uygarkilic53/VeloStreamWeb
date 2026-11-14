@@ -38,6 +38,16 @@ export const ACCOUNT_PROFILE_INCLUDE = {
       channelSlug: true,
     },
   },
+  bansReceived: {
+    select: {
+      expiresAt: true,
+      channel: {
+        select: {
+          slug: true,
+        },
+      },
+    },
+  },
 } as const;
 
 export type HydratedUserRow = Prisma.UserGetPayload<{
@@ -125,6 +135,7 @@ export function toAccountProfileView(row: HydratedUserRow): AccountProfileView {
     bio: row.bio,
     avatarUrl: row.avatarUrl ?? null,
     role: row.role,
+    theme: row.theme === "dark" ? "dark" : "light",
     createdAt: row.createdAt.toISOString(),
     channel: row.channel
       ? {
@@ -147,6 +158,11 @@ export function toAccountProfileView(row: HydratedUserRow): AccountProfileView {
           expiresAt: ban.expiresAt ? ban.expiresAt.toISOString() : null,
         }))
       : [],
+    bannedFromSlugs: row.bansReceived
+      ? row.bansReceived
+          .filter((ban) => !ban.expiresAt || ban.expiresAt > new Date())
+          .map((ban) => ban.channel.slug)
+      : [],
     followedSlugs: row.follows.map((follow) => follow.channelSlug),
   };
 }
@@ -156,7 +172,10 @@ export class UserModel implements UserModelContract {
 
   async createWithChannel(input: CreateUserWithChannelInput): Promise<AccountProfileView> {
     const normalizedEmail = input.email.trim().toLowerCase();
-    const cleanUsername = input.username.trim().replace(/^@/, "");
+    const cleanUsername = input.username.trim();
+    if (!/^[a-zA-Z0-9_]{3,32}$/.test(cleanUsername)) {
+      throw new Error("Username must be 3–32 characters using only letters, numbers, and underscores.");
+    }
     const cleanDisplayName = input.displayName.trim() || cleanUsername;
 
     try {
@@ -173,7 +192,7 @@ export class UserModel implements UserModelContract {
 
         if (existing) {
           if (existing.username.toLowerCase() === cleanUsername.toLowerCase()) {
-            throw new UniqueConstraintError("username", "That channel handle is already registered.");
+            throw new UniqueConstraintError("username", "That username is already registered.");
           }
           throw new UniqueConstraintError("email", "An account with this email already exists.");
         }
@@ -186,6 +205,7 @@ export class UserModel implements UserModelContract {
             bio: "",
             passwordHash: input.passwordHash,
             role: input.role ?? "USER",
+            theme: input.theme ?? "light",
             channel: {
               create: {
                 slug: cleanUsername,
@@ -252,7 +272,11 @@ export class UserModel implements UserModelContract {
     return user ? toPublicUserSummary(user) : null;
   }
 
-  async searchUsers(query: string, limit = 12): Promise<SearchUsersResult> {
+  async searchUsers(
+    query: string,
+    limit = 12,
+    excludeUserId?: string,
+  ): Promise<SearchUsersResult> {
     const clean = query.trim();
     const handleQuery = clean.replace(/^@/, "");
     if (!clean || !handleQuery) {
@@ -260,9 +284,24 @@ export class UserModel implements UserModelContract {
     }
 
     const safeLimit = Math.max(1, Math.min(30, limit));
+    const excludeFilter: Prisma.UserWhereInput = excludeUserId
+      ? { id: { not: excludeUserId } }
+      : {};
+    const channelBanFilter = excludeUserId
+      ? {
+          bans: {
+            none: {
+              userId: excludeUserId,
+              OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+            },
+          },
+        }
+      : {};
 
     const matchedRows = await this.prisma.user.findMany({
       where: {
+        ...excludeFilter,
+        ...(excludeUserId ? { channel: channelBanFilter } : {}),
         OR: [
           { username: { contains: handleQuery, mode: "insensitive" } },
           { displayName: { contains: clean, mode: "insensitive" } },
@@ -287,15 +326,15 @@ export class UserModel implements UserModelContract {
 
     const relatedRows = await this.prisma.user.findMany({
       where: {
+        ...excludeFilter,
         channel: {
-          is: {
-            isLive: true,
-            OR: [
-              { title: { contains: clean, mode: "insensitive" } },
-              { category: { contains: clean, mode: "insensitive" } },
-              ...(matchedCategories.length > 0 ? [{ category: { in: matchedCategories } }] : []),
-            ],
-          },
+          isLive: true,
+          ...channelBanFilter,
+          OR: [
+            { title: { contains: clean, mode: "insensitive" } },
+            { category: { contains: clean, mode: "insensitive" } },
+            ...(matchedCategories.length > 0 ? [{ category: { in: matchedCategories } }] : []),
+          ],
         },
       },
       select: PUBLIC_USER_SELECT,
@@ -304,7 +343,11 @@ export class UserModel implements UserModelContract {
 
     const relatedByQueryRows = await this.prisma.user.findMany({
       where: {
-        channel: { is: { isLive: true } },
+        ...excludeFilter,
+        channel: {
+          isLive: true,
+          ...channelBanFilter,
+        },
         OR: [
           { username: { contains: handleQuery, mode: "insensitive" } },
           { displayName: { contains: clean, mode: "insensitive" } },
@@ -332,7 +375,10 @@ export class UserModel implements UserModelContract {
 
   async updateProfile(input: UpdateUserProfileInput): Promise<AccountProfileView> {
     const normalizedEmail = input.email.trim().toLowerCase();
-    const cleanUsername = input.username.trim().replace(/^@/, "");
+    const cleanUsername = input.username.trim();
+    if (!/^[a-zA-Z0-9_]{3,32}$/.test(cleanUsername)) {
+      throw new Error("Username must be 3–32 characters using only letters, numbers, and underscores.");
+    }
     const cleanDisplayName = input.displayName.trim() || cleanUsername;
     const cleanBio = input.bio.trim();
 
@@ -359,7 +405,7 @@ export class UserModel implements UserModelContract {
 
         if (conflict) {
           if (conflict.username.toLowerCase() === cleanUsername.toLowerCase()) {
-            throw new UniqueConstraintError("username", "That channel handle is already taken.");
+            throw new UniqueConstraintError("username", "That username is already taken.");
           }
           throw new UniqueConstraintError("email", "An account with this email already exists.");
         }
@@ -380,6 +426,7 @@ export class UserModel implements UserModelContract {
             email: normalizedEmail,
             bio: cleanBio,
             ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
+            ...(input.theme !== undefined ? { theme: input.theme } : {}),
             ...(current.channel
               ? {
                   channel: {
@@ -404,6 +451,49 @@ export class UserModel implements UserModelContract {
       }
       mapPrismaUniqueError(err);
     }
+  }
+
+  async updateTheme(userId: string, theme: "light" | "dark"): Promise<AccountProfileView> {
+    try {
+      const updated = await this.prisma.user.update({
+        where: { id: userId },
+        data: { theme },
+        include: ACCOUNT_PROFILE_INCLUDE,
+      });
+      return toAccountProfileView(updated);
+    } catch (err) {
+      if (isPrismaNotFoundError(err)) {
+        throw new RecordNotFoundError("User", "User account not found.");
+      }
+      throw err;
+    }
+  }
+
+  async getFollowedUsers(userId: string): Promise<PublicUserSummary[]> {
+    const follows = await this.prisma.channelFollow.findMany({
+      where: { userId },
+      orderBy: { createdAt: "asc" },
+      select: { channelSlug: true },
+    });
+    if (follows.length === 0) {
+      return [];
+    }
+    const slugs = follows.map((f) => f.channelSlug);
+    const users = await this.prisma.user.findMany({
+      where: {
+        username: { in: slugs, mode: "insensitive" },
+      },
+      select: PUBLIC_USER_SELECT,
+    });
+    const userMap = new Map(users.map((u) => [u.username.toLowerCase(), u]));
+    const results: PublicUserSummary[] = [];
+    for (const slug of slugs) {
+      const u = userMap.get(slug.toLowerCase());
+      if (u) {
+        results.push(toPublicUserSummary(u));
+      }
+    }
+    return results;
   }
 
   async updateAvatarUrl(userId: string, avatarUrl: string | null): Promise<AccountProfileView> {

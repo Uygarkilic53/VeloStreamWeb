@@ -10,6 +10,7 @@ import {
   PublicUsernameParamSchema,
   SearchUsersQuerySchema,
   UpdateProfileBodySchema,
+  UpdateThemeBodySchema,
 } from "../schemas/auth.schema.js";
 import {
   requireAuthUser,
@@ -23,7 +24,7 @@ export function createUserController(deps: ControllerDeps) {
     async searchUsers(request: FastifyRequest, reply: FastifyReply) {
       const models = requireModels(deps.models);
       const { q, limit } = parseSchema(SearchUsersQuerySchema, request.query ?? {});
-      const result = await models.users.searchUsers(q, limit);
+      const result = await models.users.searchUsers(q, limit, request.authUser?.id);
       return reply.code(200).send({
         query: q,
         users: result.users,
@@ -38,6 +39,24 @@ export function createUserController(deps: ControllerDeps) {
       if (!user) {
         throw new HttpApiError(404, "USER_NOT_FOUND", `No creator found for @${username}.`);
       }
+
+      if (request.authUser) {
+        const banCheck = await models.channels.isUserBanned(username, request.authUser.id);
+        if (banCheck.isBanned) {
+          throw new HttpApiError(
+            403,
+            "USER_BANNED",
+            `You have been banned by @${user.username}.`,
+            undefined,
+            {
+              banned: true,
+              bannedBy: user.username,
+              reason: banCheck.reason ?? null,
+            },
+          );
+        }
+      }
+
       return reply.code(200).send({ user });
     },
 
@@ -53,6 +72,7 @@ export function createUserController(deps: ControllerDeps) {
         email: data.email,
         bio: data.bio,
         ...(data.avatarUrl !== undefined ? { avatarUrl: data.avatarUrl } : {}),
+        ...(data.theme !== undefined ? { theme: data.theme } : {}),
       });
 
       const refreshedAccessToken =
@@ -71,6 +91,18 @@ export function createUserController(deps: ControllerDeps) {
         user: updated,
         ...(refreshedAccessToken ? { accessToken: refreshedAccessToken } : {}),
         message: "Public profile updated.",
+      });
+    },
+
+    async updateTheme(request: FastifyRequest, reply: FastifyReply) {
+      const models = requireModels(deps.models);
+      const authUser = requireAuthUser(request);
+      const { theme } = parseSchema(UpdateThemeBodySchema, request.body ?? {});
+
+      const updated = await models.users.updateTheme(authUser.id, theme);
+      return reply.code(200).send({
+        user: updated,
+        message: `Appearance preference set to ${theme === "dark" ? "Dark" : "Light"} Mode.`,
       });
     },
 
@@ -165,6 +197,21 @@ export function createUserController(deps: ControllerDeps) {
       const authUser = requireAuthUser(request);
       const { slug } = parseSchema(FollowSlugParamSchema, request.params ?? {});
 
+      const banCheck = await models.channels.isUserBanned(slug, authUser.id);
+      if (banCheck.isBanned) {
+        throw new HttpApiError(
+          403,
+          "USER_BANNED",
+          `You cannot follow @${slug} because you have been banned from this channel.`,
+          undefined,
+          {
+            banned: true,
+            bannedBy: slug,
+            reason: banCheck.reason ?? null,
+          },
+        );
+      }
+
       const followedSlugs = await models.channels.setFollowState(authUser.id, slug, true);
       return reply.code(200).send({
         followedSlugs,
@@ -182,6 +229,13 @@ export function createUserController(deps: ControllerDeps) {
         followedSlugs,
         message: `Unfollowed @${slug}.`,
       });
+    },
+
+    async getFollowingUsers(request: FastifyRequest, reply: FastifyReply) {
+      const models = requireModels(deps.models);
+      const authUser = requireAuthUser(request);
+      const following = await models.users.getFollowedUsers(authUser.id);
+      return reply.code(200).send({ following });
     },
   };
 }

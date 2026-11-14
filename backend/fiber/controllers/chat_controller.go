@@ -25,6 +25,9 @@ func (ctrl *ChatController) HandleSocket(conn *websocket.Conn) {
 		return
 	}
 
+	// Support rich WebSocket frames including thumbnail snapshots without dropping connection
+	conn.SetReadLimit(4 * 1024 * 1024)
+
 	channelID := conn.Params("channelId")
 	claims, _ := conn.Locals(middlewares.ClaimsLocalKey).(models.AuthClaims)
 
@@ -76,6 +79,72 @@ func (ctrl *ChatController) HandleSocket(conn *websocket.Conn) {
 
 	_ = conn.Close()
 	// Unregister closes client.Send so the writer goroutine exits cleanly before returning.
+	ctrl.hub.Unregister(client)
+	<-doneWriter
+}
+
+// HandleLiveSocket serves a lightweight real-time subscription for live stream status changes without requiring user authentication.
+func (ctrl *ChatController) HandleLiveSocket(conn *websocket.Conn) {
+	if ctrl.hub == nil {
+		_ = conn.Close()
+		return
+	}
+
+	// Support rich WebSocket frames including thumbnail snapshots without dropping connection
+	conn.SetReadLimit(4 * 1024 * 1024)
+
+	client := services.NewClient("__live__", "viewer", "viewer")
+	ctrl.hub.Register(client)
+
+	// Send current cached snapshots to newly connected live subscriber immediately
+	for _, snapBytes := range ctrl.hub.GetAllSnapshots() {
+		select {
+		case client.Send <- snapBytes:
+		default:
+		}
+	}
+
+	doneWriter := make(chan struct{})
+	go func() {
+		defer close(doneWriter)
+		for msg := range client.Send {
+			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		var incoming struct {
+			Type    string          `json:"type"`
+			Payload json.RawMessage `json:"payload"`
+		}
+		if unmarshalErr := json.Unmarshal(raw, &incoming); unmarshalErr == nil {
+			if incoming.Type == models.FrameTypeStreamSnapshot {
+				var snap models.StreamSnapshotEvent
+				if snapErr := json.Unmarshal(incoming.Payload, &snap); snapErr == nil && snap.ChannelID != "" && snap.SnapshotURL != "" {
+					if snap.UpdatedAt == "" {
+						snap.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+					}
+					frameBytes, marshalErr := json.Marshal(models.WsFrame{
+						Type:    models.FrameTypeStreamSnapshot,
+						Payload: snap,
+					})
+					if marshalErr == nil {
+						ctrl.hub.SaveSnapshot(snap.ChannelID, frameBytes)
+						ctrl.hub.Broadcast(snap.ChannelID, frameBytes)
+						ctrl.hub.Broadcast("__live__", frameBytes)
+					}
+				}
+			}
+		}
+	}
+
+	_ = conn.Close()
 	ctrl.hub.Unregister(client)
 	<-doneWriter
 }

@@ -10,6 +10,7 @@ import (
 
 func RegisterChatRoutes(app *fiber.App, jwtSvc *services.JwtService, hub *services.HubService) {
 	ctrl := controllers.NewChatController(hub)
+	app.Get("/ws/live", websocket.New(ctrl.HandleLiveSocket))
 	app.Use("/ws/chat/:channelId", middlewares.RequireWebSocketAuth(jwtSvc))
 	app.Get("/ws/chat/:channelId", websocket.New(ctrl.HandleSocket))
 }

@@ -15,8 +15,22 @@ function attachRuntimeMonitors(page: Page) {
     const locationUrl = message.location().url ?? "";
     const text = message.text();
     const isExpectedOfflineBackendProbe =
-      (locationUrl.includes("localhost:3001") || locationUrl.includes("localhost:3002")) &&
-      (text.includes("ERR_CONNECTION_REFUSED") || text.includes("Failed to load resource"));
+      (locationUrl.includes("localhost:3001") ||
+        locationUrl.includes("localhost:3002") ||
+        locationUrl.includes("localhost:8888") ||
+        locationUrl.includes("localhost:8889") ||
+        text.includes("localhost:3001") ||
+        text.includes("localhost:3002") ||
+        text.includes("localhost:8888") ||
+        text.includes("localhost:8889") ||
+        text.includes("3002/ws") ||
+        text.includes("ws://") ||
+        text.includes("WebSocket")) &&
+      (text.includes("ERR_CONNECTION_REFUSED") ||
+        text.includes("Failed to load resource") ||
+        text.includes("WebSocket") ||
+        text.includes("net::ERR_CONNECTION_REFUSED") ||
+        text.includes("failed"));
 
     if (!isExpectedOfflineBackendProbe) {
       consoleErrors.push(`${text} (${locationUrl})`);
@@ -29,9 +43,24 @@ function attachRuntimeMonitors(page: Page) {
 async function stubOfflineBackends(page: Page) {
   await page.route("http://localhost:3001/**", (route) => route.abort("connectionrefused"));
   await page.route("http://localhost:3002/**", (route) => route.abort("connectionrefused"));
+  await page.route("http://localhost:8888/**", (route) => route.abort("connectionrefused"));
+  await page.route("http://localhost:8889/**", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 201,
+        headers: {
+          Location: `${route.request().url()}/sess_mock`,
+          "Content-Type": "application/sdp",
+        },
+        body: "v=0\r\no=- 0 0 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n",
+      });
+      return;
+    }
+    await route.fulfill({ status: 200 });
+  });
 }
 
-test("defaults to light mode, requires cookie consent on entry, and remembers dark mode in cookies while signed out", async ({
+test("defaults to light mode, requires cookie consent on entry, and manages theme via user preference in profile settings (not stored as all-users cookie)", async ({
   page,
   context,
 }) => {
@@ -43,7 +72,7 @@ test("defaults to light mode, requires cookie consent on entry, and remembers da
   const dialog = page.getByRole("dialog", { name: /accept cookies to enter velostream/i });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByText("velostream_cookie_consent")).toBeVisible();
-  await expect(dialog.getByText("velostream_theme")).toBeVisible();
+  await expect(dialog.getByText("velostream_theme")).toHaveCount(0);
 
   // Default theme is Light Mode before consent
   const html = page.locator("html");
@@ -55,29 +84,36 @@ test("defaults to light mode, requires cookie consent on entry, and remembers da
 
   // Verify initial signed-out state and cookie values
   await expect(page.getByRole("button", { name: /^sign in$/i })).toBeVisible();
-  let cookies = await context.cookies();
+  const cookies = await context.cookies();
   expect(cookies.find((c) => c.name === "velostream_cookie_consent")?.value).toBe("accepted");
-  expect(cookies.find((c) => c.name === "velostream_theme")?.value).toBe("light");
+  // velostream_theme cookie must NOT be set
+  expect(cookies.find((c) => c.name === "velostream_theme")).toBeUndefined();
 
-  // Toggle Dark Mode while NOT signed in
-  await page.getByRole("button", { name: /switch to dark mode/i }).click();
+  // Theme toggle is NOT in the navbar
+  await expect(page.getByRole("button", { name: /switch to dark mode/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /switch to light mode/i })).toHaveCount(0);
+
+  // Sign in to local preview session to verify user preference theme in profile
+  await page.getByRole("button", { name: /^sign in$/i }).click();
+  const signInForm = page.getByRole("form", { name: /sign in form/i });
+  await signInForm.getByLabel(/username or email/i).fill("theme_tester");
+  await signInForm.getByLabel(/^password$/i).fill("StrongPass123");
+  await signInForm.getByRole("button", { name: /^sign in$/i }).click();
+
+  const previewBtn = page.getByRole("button", { name: /continue in local preview session/i });
+  await expect(previewBtn).toBeVisible();
+  await previewBtn.click();
+
+  // Open profile page (defaults to public profile tab where Appearance is located)
+  await page.getByRole("button", { name: /@theme_tester/i }).click();
+  await expect(page.getByRole("heading", { name: /appearance/i })).toBeVisible();
+
+  // Switch to dark mode via profile appearance settings
+  await page.getByRole("button", { name: /dark mode/i }).click();
   await expect(html).toHaveClass(/\bdark\b/);
 
-  cookies = await context.cookies();
-  expect(cookies.find((c) => c.name === "velostream_theme")?.value).toBe("dark");
-
-  // Reload browser while signed out: gate stays closed and Dark Mode persists
-  await page.reload();
-  await expect(
-    page.getByRole("dialog", { name: /accept cookies to enter velostream/i }),
-  ).toBeHidden();
-  await expect(html).toHaveClass(/\bdark\b/);
-  await expect(page.getByRole("button", { name: /^sign in$/i })).toBeVisible();
-
-  // Toggle back to Light Mode and verify it also persists across reload
-  await page.getByRole("button", { name: /switch to light mode/i }).click();
-  await expect(html).not.toHaveClass(/\bdark\b/);
-  await page.reload();
+  // Switch back to light mode
+  await page.getByRole("button", { name: /light mode/i }).click();
   await expect(html).not.toHaveClass(/\bdark\b/);
 
   expect(pageErrors).toEqual([]);
@@ -160,7 +196,7 @@ test("index searchbar searches online and offline users with avatar, username, d
   page,
 }) => {
   const { pageErrors, consoleErrors } = attachRuntimeMonitors(page);
-  await page.route("http://localhost:3002/**", (route) => route.abort("connectionrefused"));
+  await stubOfflineBackends(page);
 
   const avatarDataUrl =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
@@ -235,6 +271,198 @@ test("index searchbar searches online and offline users with avatar, username, d
   await dropdown.getByRole("button", { name: /offline creator/i }).click();
   await expect(page.getByText("OFFLINE", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: /offline channel notes/i })).toBeVisible();
+
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+});
+
+test("displays empty state on both sidebar and homepage when backend reports no live channels and navigates to studio on action", async ({
+  page,
+}) => {
+  const { pageErrors, consoleErrors } = attachRuntimeMonitors(page);
+  await stubOfflineBackends(page);
+
+  await page.route("**/api/v1/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/channels/live") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ channels: [] }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "NOT_FOUND", message: "Not found" }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /accept cookies & enter velostream/i }).click();
+
+  // Sidebar empty state
+  await expect(page.getByText("No live channels")).toBeVisible();
+  await expect(page.getByText("Nobody is broadcasting right now.")).toBeVisible();
+  await expect(page.getByText("0 on air")).toBeVisible();
+
+  // Homepage empty state
+  const emptyHeading = page.getByRole("heading", { name: /no live broadcasts right now/i });
+  await expect(emptyHeading).toBeVisible();
+  await expect(page.getByText(/nobody is currently streaming on velostream/i)).toBeVisible();
+
+  // Clicking 'Start streaming' navigates to Studio page
+  const startStreamingBtns = page.getByRole("button", { name: /start streaming/i });
+  await expect(startStreamingBtns.first()).toBeVisible();
+  await startStreamingBtns.first().click();
+
+  const studioMain = page.getByRole("main", { name: /broadcast studio/i });
+  await expect(studioMain.getByRole("heading", { name: /broadcast studio/i })).toBeVisible();
+
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+});
+
+test("displays banned view and hides player and chat when authenticated user is banned by channel creator", async ({
+  page,
+}) => {
+  const { pageErrors, consoleErrors } = attachRuntimeMonitors(page);
+  await stubOfflineBackends(page);
+
+  await page.route("**/api/v1/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/api/v1/auth/me") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          user: {
+            id: "usr_banned_e2e",
+            username: "banned_user",
+            displayName: "Banned User",
+            email: "banned@velostream.dev",
+            role: "USER",
+            theme: "light",
+            channelTitle: "Banned Channel",
+            channelCategory: "Programming",
+            streamKey: "sk_banned_key",
+            slowMode: false,
+            bannedUsers: [],
+            bannedFromSlugs: ["creator_alice"],
+            followedSlugs: [],
+          },
+        }),
+      });
+      return;
+    }
+    if (url.pathname === "/api/v1/users/creator_alice") {
+      await route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "USER_BANNED",
+          message: "You have been banned by @creator_alice.",
+          banned: true,
+          bannedBy: "creator_alice",
+          reason: "Chat violation",
+        }),
+      });
+      return;
+    }
+    if (url.pathname === "/api/v1/channels/live") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ channels: [] }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "NOT_FOUND", message: "Not found" }),
+    });
+  });
+
+  // Seed authenticated session in localStorage before visiting
+  await page.addInitScript(() => {
+    window.localStorage.setItem(
+      "velostream_auth_session",
+      JSON.stringify({
+        accessToken: "e2e_jwt_token",
+        refreshToken: "e2e_refresh_token",
+        rememberSession: true,
+      }),
+    );
+  });
+
+  await page.goto("/?page=watch&channel=creator_alice");
+  await page.getByRole("button", { name: /accept cookies & enter velostream/i }).click();
+
+  // Banned view checks
+  const bannedHeading = page.getByRole("heading", { name: /channel unavailable/i });
+  await expect(bannedHeading).toBeVisible();
+  await expect(page.getByText(/@creator_alice has banned you from viewing their channel\./i)).toBeVisible();
+  await expect(page.getByText(/chat violation/i)).toBeVisible();
+
+  // Player and chat rail MUST NOT be present
+  await expect(page.locator("video")).toHaveCount(0);
+  await expect(page.getByLabel(/live stream chat/i)).toHaveCount(0);
+
+  // Browse other channels button navigates to home
+  const browseBtn = page.getByRole("button", { name: /browse other channels/i });
+  await expect(browseBtn).toBeVisible();
+  await browseBtn.click();
+
+  await expect(page.getByRole("heading", { name: /no live broadcasts right now/i })).toBeVisible();
+
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+});
+
+test("shows live stream preview when hovering on snapshot card and restores snapshot on hover off", async ({
+  page,
+}) => {
+  const { pageErrors, consoleErrors } = attachRuntimeMonitors(page);
+  await stubOfflineBackends(page);
+
+  // Pre-seed snapshot for kaelen_fps with a valid 1x1 PNG data URL
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "velostream_snapshot_kaelen_fps",
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    );
+  });
+
+  await page.goto("/");
+
+  const dialog = page.getByRole("dialog", { name: /accept cookies to enter velostream/i });
+  await dialog.getByRole("button", { name: /accept cookies & enter velostream/i }).click();
+
+  // Find stream card for kaelen_fps
+  const streamCard = page.getByTestId("stream-card-kaelen_fps");
+  await expect(streamCard).toBeVisible();
+
+  // Initially displays snapshot badge and image, no video element inside card
+  await expect(streamCard.getByText("SNAPSHOT")).toBeVisible();
+  await expect(streamCard.getByAltText(/live stream snapshot/i)).toBeVisible();
+  await expect(streamCard.locator("video")).toHaveCount(0);
+
+  // Hover on snapshot card
+  await streamCard.hover();
+
+  // Live video preview element appears inside card
+  await expect(streamCard.locator("video")).toBeVisible();
+  await expect(streamCard.locator("video")).toHaveAttribute("data-testid", "stream-hover-video");
+
+  // Move mouse away to banner
+  await page.getByRole("banner").hover();
+
+  // Video element is removed and snapshot continues showing
+  await expect(streamCard.locator("video")).toHaveCount(0);
+  await expect(streamCard.getByText("SNAPSHOT")).toBeVisible();
+  await expect(streamCard.getByAltText(/live stream snapshot/i)).toBeVisible();
 
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);

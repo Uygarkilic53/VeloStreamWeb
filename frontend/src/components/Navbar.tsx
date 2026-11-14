@@ -2,16 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { FiLogOut, FiX } from "react-icons/fi";
 import { useAuth } from "../lib/auth";
 import { formatViewerCount } from "../lib/streams";
-import { useTheme } from "../lib/theme";
 import type { DirectorySearchResult, DirectoryUserMatch } from "../lib/users";
 import {
   BroadcastIcon,
   CompassIcon,
   HeartIcon,
-  MoonIcon,
   SearchIcon,
   SidebarToggleIcon,
-  SunIcon,
 } from "./Icons";
 import { UserAvatar } from "./UserAvatar";
 import { VeloStreamLogo } from "./VeloStreamLogo";
@@ -50,7 +47,6 @@ export function Navbar({
   onSelectUser,
   onToggleSidebar,
 }: NavbarProps) {
-  const { theme, toggleTheme } = useTheme();
   const { user, signOut } = useAuth();
   const [searchOpen, setSearchOpen] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement | null>(null);
@@ -318,26 +314,6 @@ export function Navbar({
         )}
 
         <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-          <button
-            type="button"
-            onClick={toggleTheme}
-            aria-label={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}
-            aria-pressed={theme === "dark"}
-            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-[var(--vs-border)] bg-[var(--vs-canvas)] px-2.5 text-xs font-medium whitespace-nowrap text-[var(--vs-text)] hover:bg-[var(--vs-surface-subtle)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vs-accent)]"
-          >
-            {theme === "light" ? (
-              <>
-                <SunIcon className="h-4 w-4 text-[var(--vs-accent)]" />
-                <span className="hidden sm:inline">Light</span>
-              </>
-            ) : (
-              <>
-                <MoonIcon className="h-4 w-4 text-[var(--vs-accent)]" />
-                <span className="hidden sm:inline">Dark</span>
-              </>
-            )}
-          </button>
-
           {!isAuthPage && (
             <button
               type="button"
@@ -364,12 +340,38 @@ export function Navbar({
                 onClick={() => onNavigate({ page: "profile" })}
                 aria-current={route.page === "profile" ? "page" : undefined}
                 title={`Open @${user.username} profile`}
-                className={`inline-flex h-9 max-w-[160px] shrink-0 items-center gap-2 rounded-full border py-1 pr-2.5 pl-1 text-xs font-semibold whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vs-accent)] sm:max-w-none ${
+                className={`group relative inline-flex h-9 max-w-[160px] shrink-0 items-center gap-2 rounded-full border py-1 pr-2.5 pl-1 text-xs font-semibold whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vs-accent)] sm:max-w-none ${
                   route.page === "profile"
                     ? "border-[var(--vs-accent)] bg-[var(--vs-accent-soft)] text-[var(--vs-text)]"
                     : "border-[var(--vs-border)] bg-[var(--vs-canvas)] text-[var(--vs-text)] hover:border-[var(--vs-accent)]/70 hover:bg-[var(--vs-surface-subtle)]"
                 }`}
               >
+                <svg
+                  className="profile-tour-track"
+                  aria-hidden="true"
+                  data-testid="profile-frame-tour"
+                >
+                  <rect
+                    x="1"
+                    y="1"
+                    width="calc(100% - 2px)"
+                    height="calc(100% - 2px)"
+                    rx="18"
+                    ry="18"
+                    pathLength={100}
+                    className="profile-tour-tail"
+                  />
+                  <rect
+                    x="1"
+                    y="1"
+                    width="calc(100% - 2px)"
+                    height="calc(100% - 2px)"
+                    rx="18"
+                    ry="18"
+                    pathLength={100}
+                    className="profile-tour-head"
+                  />
+                </svg>
                 <UserAvatar
                   size="sm"
                   displayName={user.displayName}

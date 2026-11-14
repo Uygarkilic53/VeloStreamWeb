@@ -73,6 +73,17 @@ class MemoryState {
       channelBans.sort((a, b) => b.bannedAt.localeCompare(a.bannedAt));
     }
 
+    const bannedFromSlugs: string[] = [];
+    const now = Date.now();
+    for (const ban of this.bans.values()) {
+      if (ban.userId !== user.id) continue;
+      if (ban.expiresAt && ban.expiresAt.getTime() <= now) continue;
+      const ch = this.channels.get(ban.channelId);
+      if (ch) {
+        bannedFromSlugs.push(ch.slug);
+      }
+    }
+
     return {
       id: user.id,
       username: user.username,
@@ -81,6 +92,7 @@ class MemoryState {
       bio: user.bio,
       avatarUrl: user.avatarUrl,
       role: user.role,
+      theme: user.theme === "dark" ? "dark" : "light",
       createdAt: user.createdAt.toISOString(),
       channel: channel
         ? {
@@ -94,6 +106,7 @@ class MemoryState {
           }
         : null,
       bannedUsers: channelBans,
+      bannedFromSlugs,
       followedSlugs: [...(this.follows.get(user.id) ?? [])],
     };
   }
@@ -104,12 +117,15 @@ class MemoryUserModel implements UserModelContract {
 
   async createWithChannel(input: CreateUserWithChannelInput): Promise<AccountProfileView> {
     const normalizedEmail = input.email.trim().toLowerCase();
-    const cleanUsername = input.username.trim().replace(/^@/, "");
+    const cleanUsername = input.username.trim();
+    if (!/^[a-zA-Z0-9_]{3,32}$/.test(cleanUsername)) {
+      throw new Error("Username must be 3–32 characters using only letters, numbers, and underscores.");
+    }
     const cleanDisplayName = input.displayName.trim() || cleanUsername;
 
     for (const existing of this.state.users.values()) {
       if (existing.username.toLowerCase() === cleanUsername.toLowerCase()) {
-        throw new UniqueConstraintError("username", "That channel handle is already registered.");
+        throw new UniqueConstraintError("username", "That username is already registered.");
       }
       if (existing.email.toLowerCase() === normalizedEmail) {
         throw new UniqueConstraintError("email", "An account with this email already exists.");
@@ -129,6 +145,7 @@ class MemoryUserModel implements UserModelContract {
       avatarUrl: null,
       passwordHash: input.passwordHash,
       role: input.role ?? "USER",
+      theme: input.theme ?? "light",
       createdAt: now,
       updatedAt: now,
     });
@@ -208,7 +225,11 @@ class MemoryUserModel implements UserModelContract {
     return null;
   }
 
-  async searchUsers(query: string, limit = 12): Promise<SearchUsersResult> {
+  async searchUsers(
+    query: string,
+    limit = 12,
+    excludeUserId?: string,
+  ): Promise<SearchUsersResult> {
     const clean = query.trim();
     const handleQuery = clean.replace(/^@/, "").toLowerCase();
     const lowerQuery = clean.toLowerCase();
@@ -217,8 +238,23 @@ class MemoryUserModel implements UserModelContract {
     }
 
     const safeLimit = Math.max(1, Math.min(30, limit));
+    const now = Date.now();
+    const isExcluded = (candidateUserId: string) => {
+      if (!excludeUserId) return false;
+      if (candidateUserId === excludeUserId) return true;
+      const channel = this.state.findChannelByOwner(candidateUserId);
+      if (channel) {
+        const ban = this.state.bans.get(`${channel.id}:${excludeUserId}`);
+        if (ban && (!ban.expiresAt || ban.expiresAt.getTime() > now)) {
+          return true;
+        }
+      }
+      return false;
+    };
+
     const matched: PublicUserSummary[] = [];
     for (const user of this.state.users.values()) {
+      if (isExcluded(user.id)) continue;
       if (
         user.username.toLowerCase().includes(handleQuery) ||
         user.displayName.toLowerCase().includes(lowerQuery)
@@ -236,6 +272,7 @@ class MemoryUserModel implements UserModelContract {
 
     const liveRelated: PublicUserSummary[] = [];
     for (const user of this.state.users.values()) {
+      if (isExcluded(user.id)) continue;
       const summary = this.toPublicSummary(user);
       if (!summary.isLive) continue;
       const matchesText =
@@ -254,6 +291,21 @@ class MemoryUserModel implements UserModelContract {
     return { users, relatedLiveUsers };
   }
 
+  async getFollowedUsers(userId: string): Promise<PublicUserSummary[]> {
+    const slugs = this.state.follows.get(userId) ?? [];
+    if (slugs.length === 0) return [];
+    const results: PublicUserSummary[] = [];
+    for (const slug of slugs) {
+      for (const user of this.state.users.values()) {
+        if (user.username.toLowerCase() === slug.toLowerCase()) {
+          results.push(this.toPublicSummary(user));
+          break;
+        }
+      }
+    }
+    return results;
+  }
+
   async updateProfile(input: UpdateUserProfileInput): Promise<AccountProfileView> {
     const user = this.state.users.get(input.userId);
     if (!user) {
@@ -261,13 +313,16 @@ class MemoryUserModel implements UserModelContract {
     }
 
     const normalizedEmail = input.email.trim().toLowerCase();
-    const cleanUsername = input.username.trim().replace(/^@/, "");
+    const cleanUsername = input.username.trim();
+    if (!/^[a-zA-Z0-9_]{3,32}$/.test(cleanUsername)) {
+      throw new Error("Username must be 3–32 characters using only letters, numbers, and underscores.");
+    }
     const cleanDisplayName = input.displayName.trim() || cleanUsername;
 
     for (const existing of this.state.users.values()) {
       if (existing.id === input.userId) continue;
       if (existing.username.toLowerCase() === cleanUsername.toLowerCase()) {
-        throw new UniqueConstraintError("username", "That channel handle is already taken.");
+        throw new UniqueConstraintError("username", "That username is already taken.");
       }
       if (existing.email.toLowerCase() === normalizedEmail) {
         throw new UniqueConstraintError("email", "An account with this email already exists.");
@@ -301,9 +356,27 @@ class MemoryUserModel implements UserModelContract {
       email: normalizedEmail,
       bio: input.bio.trim(),
       ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
+      ...(input.theme !== undefined ? { theme: input.theme } : {}),
       updatedAt: now,
     });
 
+    const profile = this.state.toAccountProfileView(user.id);
+    if (!profile) {
+      throw new RecordNotFoundError("User", "User account not found.");
+    }
+    return profile;
+  }
+
+  async updateTheme(userId: string, theme: "light" | "dark"): Promise<AccountProfileView> {
+    const user = this.state.users.get(userId);
+    if (!user) {
+      throw new RecordNotFoundError("User", "User account not found.");
+    }
+    this.state.users.set(user.id, {
+      ...user,
+      theme,
+      updatedAt: new Date(),
+    });
     const profile = this.state.toAccountProfileView(user.id);
     if (!profile) {
       throw new RecordNotFoundError("User", "User account not found.");
@@ -412,6 +485,15 @@ class MemoryChannelModel implements ChannelModelContract {
     };
     this.state.bans.set(key, record);
 
+    // Remove active follow from targetUser to this channel
+    const targetFollows = this.state.follows.get(targetUser.id);
+    if (targetFollows) {
+      this.state.follows.set(
+        targetUser.id,
+        targetFollows.filter((s) => s.toLowerCase() !== channel.slug.toLowerCase()),
+      );
+    }
+
     return {
       channelId: channel.id,
       targetUserId: targetUser.id,
@@ -451,6 +533,85 @@ class MemoryChannelModel implements ChannelModelContract {
       : current.filter((item) => item !== cleanSlug);
     this.state.follows.set(userId, next);
     return [...next];
+  }
+
+  async isUserBanned(
+    channelSlugOrUsername: string,
+    userId: string,
+  ): Promise<{ isBanned: boolean; reason?: string }> {
+    const cleanSlug = channelSlugOrUsername.trim().replace(/^@/, "").toLowerCase();
+    if (!cleanSlug || !userId) {
+      return { isBanned: false };
+    }
+    let channel: ChannelRecord | undefined;
+    for (const ch of this.state.channels.values()) {
+      if (ch.slug.toLowerCase() === cleanSlug) {
+        channel = ch;
+        break;
+      }
+      const owner = this.state.users.get(ch.ownerId);
+      if (owner && owner.username.toLowerCase() === cleanSlug) {
+        channel = ch;
+        break;
+      }
+    }
+    if (!channel) {
+      return { isBanned: false };
+    }
+    const ban = this.state.bans.get(`${channel.id}:${userId}`);
+    if (ban && (!ban.expiresAt || ban.expiresAt.getTime() > Date.now())) {
+      return { isBanned: true, reason: ban.reason };
+    }
+    return { isBanned: false };
+  }
+
+  async getLiveChannels(excludeUserId?: string): Promise<PublicUserSummary[]> {
+    const results: PublicUserSummary[] = [];
+    const now = Date.now();
+    for (const channel of this.state.channels.values()) {
+      if (!channel.isLive) continue;
+      if (excludeUserId) {
+        const ban = this.state.bans.get(`${channel.id}:${excludeUserId}`);
+        if (ban && (!ban.expiresAt || ban.expiresAt.getTime() > now)) {
+          continue;
+        }
+      }
+      const owner = this.state.users.get(channel.ownerId);
+      if (!owner) continue;
+      results.push({
+        id: owner.id,
+        username: owner.username,
+        displayName: owner.displayName,
+        avatarUrl: owner.avatarUrl,
+        bio: owner.bio,
+        isLive: true,
+        channelTitle: channel.title,
+        channelCategory: channel.category,
+      });
+    }
+    return results;
+  }
+
+  async setLiveStatus(ownerId: string, isLive: boolean): Promise<ChannelView> {
+    const channel = this.state.findChannelByOwner(ownerId);
+    if (!channel) {
+      throw new RecordNotFoundError("Channel", "Channel not found for this account.");
+    }
+    const updated: ChannelRecord = {
+      ...channel,
+      isLive,
+      updatedAt: new Date(),
+    };
+    this.state.channels.set(channel.id, updated);
+    return {
+      id: updated.id,
+      slug: updated.slug,
+      title: updated.title,
+      category: updated.category,
+      streamKey: updated.streamKey,
+      slowMode: updated.slowMode,
+      isLive: updated.isLive,
+    };
   }
 }
 

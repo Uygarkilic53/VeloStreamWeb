@@ -34,6 +34,7 @@ webrtc: yes
 webrtcAddress: :8889
 webrtcAllowOrigin: "*"
 webrtcLocalUDPAddress: :8189
+webrtcAdditionalHosts: [127.0.0.1]
 
 # Stream lifecycle webhook hooks
 paths:

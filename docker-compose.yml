@@ -97,7 +97,7 @@ services:
       FIBER_PORT: "3002"
       PORT: "3002"
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-velostream}:${POSTGRES_PASSWORD:-velostream_dev_password}@postgres:5432/${POSTGRES_DB:-velostream}?schema=public
+      DATABASE_URL: postgresql://${POSTGRES_USER:-velostream}:${POSTGRES_PASSWORD:-velostream_dev_password}@postgres:5432/${POSTGRES_DB:-velostream}?search_path=public
       JWT_ISSUER: ${JWT_ISSUER:-velostream-fastify}
       JWT_PUBLIC_KEY_PATH: /app/.keys/jwt-public.pem
       MEDIA_WEBHOOK_SECRET: ${MEDIA_WEBHOOK_SECRET:-dev_mediamtx_webhook_secret_change_me}

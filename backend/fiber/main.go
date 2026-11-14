@@ -34,23 +34,26 @@ func main() {
 		}
 	}
 
+	var streamRepo models.StreamRepository
 	if cfg.DatabaseURL != "" {
 		pool, dbErr := config.ConnectDatabase(ctx, cfg.DatabaseURL)
 		if dbErr != nil {
 			log.Fatalf("connect postgres: %v", dbErr)
 		}
-		chatModel := models.NewChatModel(pool)
-		defer chatModel.Close()
+		defer pool.Close()
+		streamRepo = models.NewStreamModel(pool)
 	}
 
 	hubSvc := services.NewHubService()
 	go hubSvc.Run(ctx)
+	go services.EnsureMediaMTX(ctx)
 
 	fiberApp := app.New(app.Options{
 		CorsOrigin:         cfg.CorsOrigin,
 		Hub:                hubSvc,
 		JwtService:         jwtSvc,
 		MediaWebhookSecret: cfg.MediaWebhookSecret,
+		StreamRepo:         streamRepo,
 	})
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)

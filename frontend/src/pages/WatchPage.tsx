@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "react-toastify";
 import {
+  BanIcon,
   CalendarIcon,
   CheckIcon,
   ClockIcon,
@@ -18,23 +19,75 @@ import { formatViewerCount, type StreamDirectoryItem } from "../lib/streams";
 interface WatchPageProps {
   channel: StreamDirectoryItem;
   hlsBaseUrl: string;
+  whepBaseUrl?: string | undefined;
   wsUrl: string;
   onNavigate: (route: AppRoute) => void;
   onSelectCategory: (category: StreamDirectoryItem["category"]) => void;
+  isBanned?: boolean | undefined;
+  banReason?: string | null | undefined;
 }
 
 export function WatchPage({
   channel,
   hlsBaseUrl,
+  whepBaseUrl,
   wsUrl,
   onNavigate,
   onSelectCategory,
+  isBanned = false,
+  banReason = null,
 }: WatchPageProps) {
   const { user, toggleFollow } = useAuth();
   const [theaterMode, setTheaterMode] = useState(false);
   const [copiedShare, setCopiedShare] = useState(false);
 
+  const isUserBanned =
+    isBanned || Boolean(user && user.bannedFromSlugs?.includes(channel.slug.toLowerCase()));
+
+  useEffect(() => {
+    if (isUserBanned) {
+      toast.error(`You have been banned by @${channel.slug}.`);
+    }
+  }, [isUserBanned, channel.slug]);
+
+  if (isUserBanned) {
+    return (
+      <div className="mx-auto max-w-2xl px-4 py-16 text-center">
+        <div className="rounded-2xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-8 shadow-sm sm:p-12">
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--vs-live)]/10 text-[var(--vs-live)] ring-1 ring-[var(--vs-live)]/20">
+            <BanIcon className="h-8 w-8" />
+          </div>
+          <h1 className="font-display text-2xl font-bold tracking-tight text-[var(--vs-text)]">
+            Channel unavailable
+          </h1>
+          <p className="mt-3 text-sm font-semibold text-[var(--vs-text)] sm:text-base">
+            @{channel.slug} has banned you from viewing their channel.
+          </p>
+          {banReason && (
+            <div className="mx-auto mt-4 max-w-md rounded-lg border border-[var(--vs-border)] bg-[var(--vs-canvas)] px-4 py-2.5 text-xs text-[var(--vs-text-muted)]">
+              <span className="font-semibold text-[var(--vs-text)]">Reason: </span>
+              <span>{banReason}</span>
+            </div>
+          )}
+          <p className="mt-4 text-xs text-[var(--vs-text-muted)]">
+            You cannot watch this broadcast, access the channel player, or join the stream chat.
+          </p>
+          <div className="mt-8 flex justify-center">
+            <button
+              type="button"
+              onClick={() => onNavigate({ page: "home" })}
+              className="inline-flex items-center gap-2 rounded-xl bg-[var(--vs-accent)] px-5 py-2.5 text-xs font-semibold text-white transition hover:bg-[var(--vs-accent-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vs-accent)]"
+            >
+              Browse other channels
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const isFollowing = user ? user.followedSlugs.includes(channel.slug) : false;
+  const effectiveTheaterMode = channel.isLive && theaterMode;
 
   const handleShare = () => {
     const shareUrl = `${window.location.origin}/?watch=${encodeURIComponent(channel.slug)}`;
@@ -48,14 +101,15 @@ export function WatchPage({
   return (
     <div
       className={`grid gap-5 ${
-        theaterMode ? "grid-cols-1" : "xl:grid-cols-[minmax(0,1fr)_360px]"
+        effectiveTheaterMode ? "grid-cols-1" : "xl:grid-cols-[minmax(0,1fr)_360px]"
       }`}
     >
       <div className="min-w-0 space-y-4">
         <StageViewport
           hlsBaseUrl={hlsBaseUrl}
+          whepBaseUrl={whepBaseUrl}
           channel={channel}
-          theaterMode={theaterMode}
+          theaterMode={effectiveTheaterMode}
           onToggleTheater={() => setTheaterMode((prev) => !prev)}
         />
 
@@ -123,16 +177,18 @@ export function WatchPage({
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <div className="text-right text-xs text-[var(--vs-text-muted)] tabular-nums">
-              <div className="inline-flex items-center justify-end gap-1 font-semibold text-[var(--vs-text)]">
-                <UsersIcon className="h-3.5 w-3.5 shrink-0 text-[var(--vs-accent)]" />
-                <span>{formatViewerCount(channel.viewerCount)} watching</span>
+            {channel.isLive && (
+              <div className="text-right text-xs text-[var(--vs-text-muted)] tabular-nums">
+                <div className="inline-flex items-center justify-end gap-1 font-semibold text-[var(--vs-text)]">
+                  <UsersIcon className="h-3.5 w-3.5 shrink-0 text-[var(--vs-accent)]" />
+                  <span>{formatViewerCount(channel.viewerCount)} watching</span>
+                </div>
+                <div className="flex items-center justify-end gap-1">
+                  <ClockIcon className="h-3 w-3 shrink-0" />
+                  <span>Uptime {channel.uptime}</span>
+                </div>
               </div>
-              <div className="flex items-center justify-end gap-1">
-                <ClockIcon className="h-3 w-3 shrink-0" />
-                <span>Uptime {channel.uptime}</span>
-              </div>
-            </div>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -212,6 +268,7 @@ export function WatchPage({
       <ChatRail
         channelSlug={channel.slug}
         wsUrl={wsUrl}
+        isLive={channel.isLive}
       />
     </div>
   );

@@ -11,7 +11,7 @@ import type { AppRoute } from "../components/Navbar";
 import { StreamThumbnail } from "../components/StreamThumbnail";
 import { VeloStreamLogo } from "../components/VeloStreamLogo";
 import { useAuth } from "../lib/auth";
-import type { FieldErrorMap } from "../lib/auth-schemas";
+import { RESERVED_USERNAMES, type FieldErrorMap } from "../lib/auth-schemas";
 
 interface AuthPageProps {
   mode: "signin" | "signup";
@@ -53,9 +53,13 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
   const [backendUnavailable, setBackendUnavailable] = useState(false);
 
   const isSignUp = mode === "signup";
-  const normalizedUsername = username.trim().replace(/^@/, "");
+  const trimmedUsername = username.trim();
+  const isReservedUsername =
+    trimmedUsername.length > 0 && RESERVED_USERNAMES.has(trimmedUsername.toLowerCase());
   const isUsernameValid =
-    normalizedUsername.length > 0 && USERNAME_PATTERN.test(normalizedUsername);
+    trimmedUsername.length > 0 &&
+    USERNAME_PATTERN.test(trimmedUsername) &&
+    !isReservedUsername;
   const passwordStrength = getPasswordStrength(password);
 
   function clearFieldError(field: string) {
@@ -84,7 +88,7 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
 
     if (isSignUp) {
       const result = await signUp({
-        username: normalizedUsername,
+        username: trimmedUsername,
         ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
         email: email.trim(),
         password,
@@ -103,8 +107,8 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
         : (result.error ?? "Unable to create your account.");
       setErrorMessage(message);
       setBackendUnavailable(Boolean(result.backendUnavailable));
-      if (!hasFieldErrors) {
-        toast.error(message);
+      if (!hasFieldErrors || result.fromApi) {
+        toast.error(result.error ?? message);
       }
       return;
     }
@@ -126,16 +130,17 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
       : (result.error ?? "Unable to sign in.");
     setErrorMessage(message);
     setBackendUnavailable(Boolean(result.backendUnavailable));
-    if (!hasFieldErrors) {
-      toast.error(message);
+    if (!hasFieldErrors || result.fromApi) {
+      toast.error(result.error ?? message);
     }
   }
 
   function handleEnterPreviewSession() {
-    if (isSignUp && normalizedUsername) {
+    if (isSignUp && isUsernameValid) {
       enterPreviewSession({
-        username: normalizedUsername,
+        username: trimmedUsername,
         ...(email.trim() ? { email: email.trim() } : {}),
+        rememberSession,
       });
     } else if (!isSignUp && identifier.trim()) {
       const raw = identifier.trim();
@@ -144,12 +149,19 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
         enterPreviewSession({
           email: raw,
           ...(prefix.length >= 3 ? { username: prefix } : {}),
+          rememberSession,
         });
       } else {
-        enterPreviewSession({ username: raw.replace(/^@/, "") });
+        const cleanIdentifier = raw.replace(/^@/, "");
+        enterPreviewSession(
+          USERNAME_PATTERN.test(cleanIdentifier) &&
+            !RESERVED_USERNAMES.has(cleanIdentifier.toLowerCase())
+            ? { username: cleanIdentifier, rememberSession }
+            : { rememberSession },
+        );
       }
     } else {
-      enterPreviewSession();
+      enterPreviewSession({ rememberSession });
     }
     onNavigate({ page: "home" });
   }
@@ -249,22 +261,20 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
               <button
                 type="button"
                 onClick={() => switchAuthMode("signin")}
-                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                  !isSignUp
+                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${!isSignUp
                     ? "bg-[var(--vs-surface)] text-[var(--vs-text)] shadow-xs"
                     : "text-[var(--vs-text-muted)] hover:text-[var(--vs-text)]"
-                }`}
+                  }`}
               >
                 Sign in
               </button>
               <button
                 type="button"
                 onClick={() => switchAuthMode("signup")}
-                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                  isSignUp
+                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${isSignUp
                     ? "bg-[var(--vs-surface)] text-[var(--vs-text)] shadow-xs"
                     : "text-[var(--vs-text-muted)] hover:text-[var(--vs-text)]"
-                }`}
+                  }`}
               >
                 Create account
               </button>
@@ -276,7 +286,7 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
               </h2>
               <p className="mt-1 text-sm text-[var(--vs-text-muted)]">
                 {isSignUp
-                  ? "Reserve your channel handle, stream key, and live chat profile."
+                  ? "Reserve your unique username, stream key, and live chat profile."
                   : "Access your profile settings, broadcast studio, and followed channels."}
               </p>
             </div>
@@ -296,43 +306,40 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
                       htmlFor="auth-username"
                       className="text-xs font-semibold text-[var(--vs-text)]"
                     >
-                      Channel handle
+                      Username
                     </label>
-                    {normalizedUsername.length > 0 && !usernameError && (
+                    {trimmedUsername.length > 0 && !usernameError && (
                       <span
-                        className={`text-[11px] font-medium ${
-                          isUsernameValid ? "text-[var(--vs-ok)]" : "text-[var(--vs-live)]"
-                        }`}
+                        className={`text-[11px] font-medium ${isUsernameValid ? "text-[var(--vs-ok)]" : "text-[var(--vs-live)]"
+                          }`}
                       >
-                        {isUsernameValid ? "Valid handle" : "3–32 chars: letters, digits, _"}
+                        {isUsernameValid
+                          ? "Valid username"
+                          : isReservedUsername
+                            ? "Reserved username"
+                            : "3–32 chars: letters, digits, _"}
                       </span>
                     )}
                   </div>
-                  <div className="relative">
-                    <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 font-mono text-sm text-[var(--vs-text-muted)]">
-                      @
-                    </span>
-                    <input
-                      id="auth-username"
-                      name="username"
-                      type="text"
-                      autoComplete="username"
-                      required
-                      aria-invalid={Boolean(usernameError)}
-                      aria-describedby={usernameError ? "auth-username-error" : undefined}
-                      value={username}
-                      onChange={(e) => {
-                        setUsername(e.target.value);
-                        clearFieldError("username");
-                      }}
-                      placeholder="deniz_k"
-                      className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] pl-7 pr-3 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${
-                        usernameError
-                          ? "border-[var(--vs-live)] focus:border-[var(--vs-live)]"
-                          : "border-[var(--vs-border)] focus:border-[var(--vs-accent)]"
+                  <input
+                    id="auth-username"
+                    name="username"
+                    type="text"
+                    autoComplete="username"
+                    required
+                    aria-invalid={Boolean(usernameError)}
+                    aria-describedby={usernameError ? "auth-username-error" : undefined}
+                    value={username}
+                    onChange={(e) => {
+                      setUsername(e.target.value);
+                      clearFieldError("username");
+                    }}
+                    placeholder="deniz_k"
+                    className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${usernameError
+                        ? "border-[var(--vs-live)] focus:border-[var(--vs-live)]"
+                        : "border-[var(--vs-border)] focus:border-[var(--vs-accent)]"
                       }`}
-                    />
-                  </div>
+                  />
                   {usernameError && (
                     <p id="auth-username-error" className="text-[11px] font-medium text-[var(--vs-live)]">
                       {usernameError}
@@ -360,11 +367,10 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
                       clearFieldError("displayName");
                     }}
                     placeholder="Deniz Kaya"
-                    className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${
-                      displayNameError
+                    className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${displayNameError
                         ? "border-[var(--vs-live)] focus:border-[var(--vs-live)]"
                         : "border-[var(--vs-border)] focus:border-[var(--vs-accent)]"
-                    }`}
+                      }`}
                   />
                   {displayNameError && (
                     <p id="auth-display-name-error" className="text-[11px] font-medium text-[var(--vs-live)]">
@@ -394,11 +400,10 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
                       clearFieldError("email");
                     }}
                     placeholder="you@velostream.dev"
-                    className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${
-                      emailError
+                    className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${emailError
                         ? "border-[var(--vs-live)] focus:border-[var(--vs-live)]"
                         : "border-[var(--vs-border)] focus:border-[var(--vs-accent)]"
-                    }`}
+                      }`}
                   />
                   {emailError && (
                     <p id="auth-email-error" className="text-[11px] font-medium text-[var(--vs-live)]">
@@ -429,11 +434,10 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
                     clearFieldError("identifier");
                   }}
                   placeholder="deniz_k or you@velostream.dev"
-                  className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${
-                    identifierError
+                  className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${identifierError
                       ? "border-[var(--vs-live)] focus:border-[var(--vs-live)]"
                       : "border-[var(--vs-border)] focus:border-[var(--vs-accent)]"
-                  }`}
+                    }`}
                 />
                 {identifierError && (
                   <p id="auth-identifier-error" className="text-[11px] font-medium text-[var(--vs-live)]">
@@ -465,11 +469,10 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
                     clearFieldError("password");
                   }}
                   placeholder={isSignUp ? "Create a strong password" : "Enter your password"}
-                  className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] pl-3 pr-10 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${
-                    passwordError
+                  className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] pl-3 pr-10 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${passwordError
                       ? "border-[var(--vs-live)] focus:border-[var(--vs-live)]"
                       : "border-[var(--vs-border)] focus:border-[var(--vs-accent)]"
-                  }`}
+                    }`}
                 />
                 <button
                   type="button"
@@ -530,11 +533,10 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
                     clearFieldError("confirmPassword");
                   }}
                   placeholder="Re-enter your password"
-                  className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${
-                    confirmPasswordError
+                  className={`h-10 w-full rounded-lg border bg-[var(--vs-surface-subtle)] px-3 text-sm text-[var(--vs-text)] placeholder:text-[var(--vs-text-muted)] focus:bg-[var(--vs-surface)] focus:outline-none ${confirmPasswordError
                       ? "border-[var(--vs-live)] focus:border-[var(--vs-live)]"
                       : "border-[var(--vs-border)] focus:border-[var(--vs-accent)]"
-                  }`}
+                    }`}
                 />
                 {confirmPasswordError && (
                   <p

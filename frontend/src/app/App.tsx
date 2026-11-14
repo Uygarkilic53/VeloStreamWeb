@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CookieConsentGate } from "../components/CookieConsentGate";
+import { LoadingSpinner } from "../components/LoadingSpinner";
 import { Navbar, type AppRoute } from "../components/Navbar";
 import { Sidebar } from "../components/Sidebar";
 import { AuthPage } from "../pages/AuthPage";
@@ -10,12 +11,15 @@ import { WatchPage } from "../pages/WatchPage";
 import { AuthProvider, useAuth, type StreamCategory } from "../lib/auth";
 import { getFrontendEnv } from "../lib/env";
 import { INITIAL_LIVE_STREAMS, type StreamDirectoryItem } from "../lib/streams";
+import { saveStreamSnapshot } from "../lib/snapshots";
 import { ThemeProvider, useTheme } from "../lib/theme";
 import {
+  fetchLiveChannelsApi,
   fetchPublicUserApi,
   publicUserToStreamItem,
   useDirectorySearch,
   type DirectoryUserMatch,
+  type PublicUserSummary,
 } from "../lib/users";
 
 const CATEGORY_SET = new Set<string>([
@@ -84,7 +88,7 @@ function deriveInitials(name: string): string {
 
 export function AppShell() {
   const env = useMemo(() => getFrontendEnv(), []);
-  const { user } = useAuth();
+  const { user, markChannelBanned } = useAuth();
   const { theme, openCookieSettings } = useTheme();
 
   const [route, setRoute] = useState<AppRoute>(() => parseRouteFromLocation());
@@ -97,7 +101,187 @@ export function AppShell() {
     title: string;
     category: StreamCategory;
   } | null>(null);
+  const [rawLiveStreams, setRawLiveStreams] = useState<PublicUserSummary[]>([]);
+  const [isLiveLoading, setIsLiveLoading] = useState(true);
+  const [isOfflineFallback, setIsOfflineFallback] = useState(false);
   const [resolvedChannels, setResolvedChannels] = useState<Record<string, StreamDirectoryItem>>({});
+  const [bannedChannels, setBannedChannels] = useState<
+    Record<string, { isBanned: boolean; reason: string | null }>
+  >({});
+  const wsOverridesRef = useRef<
+    Map<string, { status: "live" | "offline"; user?: PublicUserSummary }>
+  >(new Map());
+
+  const applySnapshot = useCallback((channels: PublicUserSummary[]) => {
+    // 1. Exclude any channels that went offline via WS
+    const merged = channels.filter((ch) => {
+      const override = wsOverridesRef.current.get(ch.username.toLowerCase());
+      if (override && override.status === "offline") {
+        return false;
+      }
+      return true;
+    });
+
+    // 2. Add or update channels that went live via WS and weren't in HTTP snapshot
+    for (const [slug, override] of wsOverridesRef.current.entries()) {
+      if (override.status === "live" && override.user) {
+        const exists = merged.some((ch) => ch.username.toLowerCase() === slug);
+        if (!exists) {
+          merged.push(override.user);
+        }
+      }
+    }
+
+    setRawLiveStreams(merged);
+    setIsLiveLoading(false);
+    setIsOfflineFallback(false);
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const controller = new AbortController();
+
+    void fetchLiveChannelsApi(controller.signal, user?.accessToken)
+      .then((channels) => {
+        if (isMounted) {
+          if (channels !== null) {
+            applySnapshot(channels);
+          } else {
+            setIsLiveLoading(false);
+            setIsOfflineFallback(true);
+          }
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setIsLiveLoading(false);
+          setIsOfflineFallback(true);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+      controller.abort();
+    };
+  }, [applySnapshot, user?.accessToken]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.WebSocket) {
+      return;
+    }
+    const wsUrl = `${env.realtimeWsUrl.replace(/^http/, "ws")}/ws/live`;
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | undefined;
+    let isCleanedUp = false;
+
+    function connect() {
+      if (isCleanedUp) return;
+      try {
+        socket = new WebSocket(wsUrl);
+        socket.onopen = () => {
+          void fetchLiveChannelsApi(undefined, user?.accessToken).then((channels) => {
+            if (!isCleanedUp && channels !== null) {
+              applySnapshot(channels);
+            }
+          });
+        };
+        socket.onmessage = (event) => {
+          try {
+            const frame = JSON.parse(event.data);
+            if (frame.type === "stream.status" && frame.payload) {
+              setIsLiveLoading(false);
+              const { channelId, status } = frame.payload;
+              const cleanSlug = String(channelId || "").toLowerCase();
+              if (status === "live") {
+                wsOverridesRef.current.set(cleanSlug, { status: "live" });
+                void fetchPublicUserApi(cleanSlug, undefined, user?.accessToken).then((fetched) => {
+                  if (!isCleanedUp && fetched && !("isBanned" in fetched)) {
+                    wsOverridesRef.current.set(cleanSlug, {
+                      status: "live",
+                      user: { ...fetched, isLive: true },
+                    });
+                    setRawLiveStreams((prev) => {
+                      const next = prev.filter(
+                        (p) => p.username.toLowerCase() !== cleanSlug,
+                      );
+                      return [...next, { ...fetched, isLive: true }];
+                    });
+                    setResolvedChannels((prev) => {
+                      const existing = prev[cleanSlug];
+                      if (!existing) return prev;
+                      return {
+                        ...prev,
+                        [cleanSlug]: {
+                          ...existing,
+                          ...publicUserToStreamItem({ ...fetched, isLive: true }),
+                        },
+                      };
+                    });
+                  }
+                });
+              } else if (status === "offline") {
+                wsOverridesRef.current.set(cleanSlug, { status: "offline" });
+                setRawLiveStreams((prev) =>
+                  prev.filter((p) => p.username.toLowerCase() !== cleanSlug),
+                );
+                setResolvedChannels((prev) => {
+                  const existing = prev[cleanSlug];
+                  if (!existing) return prev;
+                  return {
+                    ...prev,
+                    [cleanSlug]: {
+                      ...existing,
+                      isLive: false,
+                      subCategory: "Offline channel",
+                      uptime: "Offline",
+                    },
+                  };
+                });
+              }
+            } else if (frame.type === "stream.snapshot" && frame.payload) {
+              const { channelId, snapshotUrl } = frame.payload;
+              if (channelId && snapshotUrl) {
+                saveStreamSnapshot(String(channelId), String(snapshotUrl));
+              }
+            } else if (frame.type === "moderation.banned" && frame.payload) {
+              const channelSlug = String(
+                frame.payload.channelSlug || frame.payload.channelId || "",
+              ).toLowerCase();
+              if (channelSlug) {
+                markChannelBanned(channelSlug);
+                setBannedChannels((prev) => ({
+                  ...prev,
+                  [channelSlug]: { isBanned: true, reason: frame.payload.reason ?? null },
+                }));
+              }
+            }
+          } catch {
+            // Ignore malformed WS frames
+          }
+        };
+        socket.onclose = () => {
+          if (!isCleanedUp) {
+            reconnectTimer = window.setTimeout(connect, 3000);
+          }
+        };
+        socket.onerror = () => {
+          socket?.close();
+        };
+      } catch {
+        if (!isCleanedUp) {
+          reconnectTimer = window.setTimeout(connect, 5000);
+        }
+      }
+    }
+
+    connect();
+
+    return () => {
+      isCleanedUp = true;
+      window.clearTimeout(reconnectTimer);
+      socket?.close();
+    };
+  }, [applySnapshot, env.realtimeWsUrl, markChannelBanned, user?.accessToken]);
 
   useEffect(() => {
     function handlePopState() {
@@ -121,39 +305,57 @@ export function AppShell() {
   }, []);
 
   const streams = useMemo<readonly StreamDirectoryItem[]>(() => {
-    if (!user || !isBroadcastLive) {
-      return INITIAL_LIVE_STREAMS;
+    const items: StreamDirectoryItem[] =
+      isOfflineFallback && rawLiveStreams.length === 0
+        ? [...INITIAL_LIVE_STREAMS]
+        : rawLiveStreams.map((item) =>
+            publicUserToStreamItem({
+              ...item,
+              isLive: true,
+            }),
+          );
+
+    if (user && isBroadcastLive) {
+      const userCategory = broadcastMeta?.category ?? user.channelCategory;
+      const liveItem: StreamDirectoryItem = {
+        id: `ch_${user.username}`,
+        slug: user.username,
+        displayName: user.displayName,
+        title: broadcastMeta?.title ?? user.channelTitle,
+        isLive: true,
+        viewerCount: 1,
+        category: CATEGORY_SET.has(userCategory) ? userCategory : "Programming",
+        subCategory: "WebRTC Direct",
+        tags: ["Live Studio", "Low Latency"],
+        uptime: "0m",
+        quality: "1080p60",
+        ingestProtocol: "WebRTC WHIP",
+        followersLabel: "1",
+        bio: user.bio || "Live broadcast powered by VeloStream Studio.",
+        schedule: ["Live now from VeloStream Studio"],
+        scene: "rust",
+        avatarInitials: deriveInitials(user.displayName),
+        avatarAccent: "#2563EB",
+        avatarUrl: user.avatarUrl,
+      };
+
+      const existingIndex = items.findIndex(
+        (item) => item.slug.toLowerCase() === user.username.toLowerCase(),
+      );
+      if (existingIndex === -1) {
+        return [liveItem, ...items];
+      }
+      return items.map((item, idx) => (idx === existingIndex ? liveItem : item));
     }
 
-    const userCategory = broadcastMeta?.category ?? user.channelCategory;
-    const liveItem: StreamDirectoryItem = {
-      id: `ch_${user.username}`,
-      slug: user.username,
-      displayName: user.displayName,
-      title: broadcastMeta?.title ?? user.channelTitle,
-      isLive: true,
-      viewerCount: 1,
-      category: CATEGORY_SET.has(userCategory) ? userCategory : "Programming",
-      subCategory: "WebRTC Direct",
-      tags: ["Live Studio", "Low Latency"],
-      uptime: "0m",
-      quality: "1080p60",
-      ingestProtocol: "WebRTC WHIP",
-      followersLabel: "1",
-      bio: user.bio || "Live broadcast powered by VeloStream Studio.",
-      schedule: ["Live now from VeloStream Studio"],
-      scene: "rust",
-      avatarInitials: deriveInitials(user.displayName),
-      avatarAccent: "#2563EB",
-      avatarUrl: user.avatarUrl,
-    };
+    return items;
+  }, [broadcastMeta, isBroadcastLive, isOfflineFallback, rawLiveStreams, user]);
 
-    const existingIndex = INITIAL_LIVE_STREAMS.findIndex((item) => item.slug === user.username);
-    if (existingIndex === -1) {
-      return [liveItem, ...INITIAL_LIVE_STREAMS];
-    }
-    return INITIAL_LIVE_STREAMS.map((item) => (item.slug === user.username ? liveItem : item));
-  }, [broadcastMeta, isBroadcastLive, user]);
+  const visibleStreams = useMemo(() => {
+    const banned = new Set((user?.bannedFromSlugs ?? []).map((s) => s.toLowerCase()));
+    if (banned.size === 0) return streams;
+    return streams.filter((s) => !banned.has(s.slug.toLowerCase()));
+  }, [streams, user?.bannedFromSlugs]);
 
   const searchResults = useDirectorySearch(searchQuery, streams, user);
 
@@ -179,8 +381,11 @@ export function AppShell() {
       return;
     }
     const slugLower = route.slug.toLowerCase();
+    if (bannedChannels[slugLower]) {
+      return;
+    }
     const inDirectory = streams.some((s) => s.slug.toLowerCase() === slugLower);
-    if (inDirectory || resolvedChannels[slugLower]) {
+    if ((inDirectory && !user) || (resolvedChannels[slugLower] && !user?.bannedFromSlugs?.includes(slugLower))) {
       return;
     }
     if (user && user.username.toLowerCase() === slugLower) {
@@ -201,16 +406,25 @@ export function AppShell() {
     }
 
     const controller = new AbortController();
-    void fetchPublicUserApi(route.slug, controller.signal).then((fetched) => {
-      if (fetched && !controller.signal.aborted) {
-        setResolvedChannels((prev) => ({
-          ...prev,
-          [slugLower]: publicUserToStreamItem(fetched),
-        }));
+    void fetchPublicUserApi(route.slug, controller.signal, user?.accessToken).then((fetched) => {
+      if (controller.signal.aborted || !fetched) {
+        return;
       }
+      if ("isBanned" in fetched && fetched.isBanned) {
+        markChannelBanned(route.slug);
+        setBannedChannels((prev) => ({
+          ...prev,
+          [slugLower]: { isBanned: true, reason: fetched.reason },
+        }));
+        return;
+      }
+      setResolvedChannels((prev) => ({
+        ...prev,
+        [slugLower]: publicUserToStreamItem(fetched),
+      }));
     });
     return () => controller.abort();
-  }, [isBroadcastLive, resolvedChannels, route, streams, user]);
+  }, [bannedChannels, isBroadcastLive, markChannelBanned, resolvedChannels, route, streams, user]);
 
   const showSidebar =
     route.page === "home" ||
@@ -218,11 +432,37 @@ export function AppShell() {
     route.page === "watch" ||
     route.page === "profile";
 
+  const isWatchChannelBanned =
+    route.page === "watch" &&
+    (Boolean(user?.bannedFromSlugs?.includes(route.slug.toLowerCase())) ||
+      bannedChannels[route.slug.toLowerCase()]?.isBanned === true);
+
   const activeWatchChannel =
     route.page === "watch"
       ? streams.find((stream) => stream.slug.toLowerCase() === route.slug.toLowerCase()) ??
         resolvedChannels[route.slug.toLowerCase()] ??
-        streams[0]
+        (isWatchChannelBanned
+          ? {
+              id: `ch_${route.slug}`,
+              slug: route.slug,
+              displayName: route.slug,
+              title: `${route.slug}'s channel`,
+              isLive: false,
+              viewerCount: 0,
+              category: "Programming" as const,
+              subCategory: "Offline",
+              tags: [],
+              uptime: "Offline",
+              quality: "1080p60",
+              ingestProtocol: "WebRTC WHIP",
+              followersLabel: "Creator channel",
+              bio: "",
+              schedule: [],
+              scene: "rust" as const,
+              avatarInitials: route.slug.slice(0, 2).toUpperCase(),
+              avatarAccent: "#EF4444",
+            }
+          : undefined)
       : undefined;
 
   return (
@@ -248,17 +488,18 @@ export function AppShell() {
         {showSidebar && (
           <Sidebar
             collapsed={sidebarCollapsed}
-            streams={streams}
+            streams={visibleStreams}
             activeCategory={activeCategory}
             onSelectCategory={setActiveCategory}
             onNavigate={navigate}
+            isLoading={isLiveLoading}
           />
         )}
 
         <div className="min-w-0 flex-1">
           {(route.page === "home" || route.page === "following") && (
             <DiscoveryPage
-              streams={streams}
+              streams={visibleStreams}
               activeCategory={activeCategory}
               onSelectCategory={setActiveCategory}
               searchQuery={searchQuery}
@@ -268,18 +509,29 @@ export function AppShell() {
               onSelectUser={handleSelectSearchedUser}
               onlyFollowing={route.page === "following"}
               onNavigate={navigate}
+              isLoading={isLiveLoading}
+              hlsBaseUrl={env.hlsBaseUrl}
+              whepBaseUrl={env.whepBaseUrl}
             />
           )}
 
-          {route.page === "watch" && activeWatchChannel && (
-            <WatchPage
-              channel={activeWatchChannel}
-              hlsBaseUrl={env.hlsBaseUrl}
-              wsUrl={env.realtimeWsUrl}
-              onNavigate={navigate}
-              onSelectCategory={setActiveCategory}
-            />
-          )}
+          {route.page === "watch" &&
+            (activeWatchChannel ? (
+              <WatchPage
+                channel={activeWatchChannel}
+                hlsBaseUrl={env.hlsBaseUrl}
+                whepBaseUrl={env.whepBaseUrl}
+                wsUrl={env.realtimeWsUrl}
+                onNavigate={navigate}
+                onSelectCategory={setActiveCategory}
+                isBanned={isWatchChannelBanned}
+                banReason={bannedChannels[route.slug.toLowerCase()]?.reason ?? null}
+              />
+            ) : (
+              <div className="flex min-h-[400px] flex-col items-center justify-center p-8">
+                <LoadingSpinner label="Loading channel..." />
+              </div>
+            ))}
 
           {(route.page === "signin" || route.page === "signup") && (
             <AuthPage
@@ -329,10 +581,10 @@ export function AppShell() {
 
 export function App() {
   return (
-    <ThemeProvider>
-      <AuthProvider>
+    <AuthProvider>
+      <ThemeProvider>
         <AppShell />
-      </AuthProvider>
-    </ThemeProvider>
+      </ThemeProvider>
+    </AuthProvider>
   );
 }

@@ -30,12 +30,12 @@ export function mapPrismaUniqueError(err: unknown): never {
       throw new UniqueConstraintError("email", "An account with this email already exists.");
     }
     if (target.includes("slug")) {
-      throw new UniqueConstraintError("slug", "That channel handle is already registered.");
+      throw new UniqueConstraintError("slug", "That username is already registered.");
     }
     if (target.includes("stream_key") || target.includes("streamkey")) {
       throw new UniqueConstraintError("streamKey", "Generated stream key collided; please retry.");
     }
-    throw new UniqueConstraintError("username", "That channel handle is already registered.");
+    throw new UniqueConstraintError("username", "That username is already registered.");
   }
   throw err;
 }

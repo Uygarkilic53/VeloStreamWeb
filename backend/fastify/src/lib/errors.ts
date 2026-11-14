@@ -7,19 +7,28 @@ export interface ApiErrorBody {
   error: string;
   message: string;
   fieldErrors?: FieldErrors;
+  [key: string]: unknown;
 }
 
 export class HttpApiError extends Error {
   readonly statusCode: number;
   readonly code: string;
   readonly fieldErrors: FieldErrors | undefined;
+  readonly details: Record<string, unknown> | undefined;
 
-  constructor(statusCode: number, code: string, message: string, fieldErrors?: FieldErrors) {
+  constructor(
+    statusCode: number,
+    code: string,
+    message: string,
+    fieldErrors?: FieldErrors,
+    details?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = "HttpApiError";
     this.statusCode = statusCode;
     this.code = code;
     this.fieldErrors = fieldErrors;
+    this.details = details;
   }
 }
 
@@ -56,11 +65,13 @@ export function sendApiError(
   code: string,
   message: string,
   fieldErrors?: FieldErrors,
+  details?: Record<string, unknown>,
 ) {
   const payload: ApiErrorBody = {
     error: code,
     message,
     ...(fieldErrors && Object.keys(fieldErrors).length > 0 ? { fieldErrors } : {}),
+    ...(details ?? {}),
   };
   return reply.code(statusCode).send(payload);
 }
