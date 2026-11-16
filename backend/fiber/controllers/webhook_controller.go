@@ -20,13 +20,19 @@ type WebhookController struct {
 	secret     string
 	hub        *services.HubService
 	streamRepo models.StreamRepository
+	chatModel  *models.ChatModel
 }
 
-func NewWebhookController(secret string, hub *services.HubService, streamRepo models.StreamRepository) *WebhookController {
+func NewWebhookController(secret string, hub *services.HubService, streamRepo models.StreamRepository, chatModel ...*models.ChatModel) *WebhookController {
+	var cm *models.ChatModel
+	if len(chatModel) > 0 {
+		cm = chatModel[0]
+	}
 	return &WebhookController{
 		secret:     secret,
 		hub:        hub,
 		streamRepo: streamRepo,
+		chatModel:  cm,
 	}
 }
 
@@ -175,8 +181,10 @@ func (ctrl *WebhookController) MediaMTXEvent(c *fiber.Ctx) error {
 		}
 	} else {
 		// stream.not_ready
+		var channelID string
 		if ctrl.streamRepo != nil {
-			channelID, err := ctrl.streamRepo.SetChannelLive(c.UserContext(), channelSlug, false)
+			var err error
+			channelID, err = ctrl.streamRepo.SetChannelLive(c.UserContext(), channelSlug, false)
 			if err != nil {
 				if errors.Is(err, models.ErrChannelNotFound) {
 					log.Printf("[MediaMTXEvent] channel %q not found setting offline: %v", channelSlug, err)
@@ -196,11 +204,24 @@ func (ctrl *WebhookController) MediaMTXEvent(c *fiber.Ctx) error {
 				})
 			}
 		}
+
+		if ctrl.chatModel != nil {
+			targetID := channelID
+			if targetID == "" {
+				targetID = channelSlug
+			}
+			_ = ctrl.chatModel.ClearChannelMessages(c.UserContext(), targetID)
+		}
 	}
 
 	if ctrl.hub != nil {
+		cleanSlug := strings.ToLower(channelSlug)
 		if status == "offline" {
 			ctrl.hub.DeleteSnapshot(channelSlug)
+			ctrl.hub.SetRoomFrozen(cleanSlug, false)
+			if cleanSlug != channelSlug {
+				ctrl.hub.SetRoomFrozen(channelSlug, false)
+			}
 		}
 		frameBytes, err := json.Marshal(models.WsFrame{
 			Type: models.FrameTypeStreamStatus,
@@ -211,8 +232,26 @@ func (ctrl *WebhookController) MediaMTXEvent(c *fiber.Ctx) error {
 			},
 		})
 		if err == nil {
-			ctrl.hub.Broadcast(channelSlug, frameBytes)
+			ctrl.hub.Broadcast(cleanSlug, frameBytes)
+			if cleanSlug != channelSlug {
+				ctrl.hub.Broadcast(channelSlug, frameBytes)
+			}
 			ctrl.hub.Broadcast("__live__", frameBytes)
+		}
+
+		if status == "offline" {
+			resetBytes, resetErr := json.Marshal(models.WsFrame{
+				Type: models.FrameTypeChatReset,
+				Payload: models.ChatResetPayload{
+					ChannelID: channelSlug,
+				},
+			})
+			if resetErr == nil {
+				ctrl.hub.Broadcast(cleanSlug, resetBytes)
+				if cleanSlug != channelSlug {
+					ctrl.hub.Broadcast(channelSlug, resetBytes)
+				}
+			}
 		}
 	}
 

@@ -56,6 +56,36 @@ export interface ChannelBanView {
   expiresAt: string | null;
 }
 
+export interface ChannelModeratorView {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  assignedAt: string;
+}
+
+export interface ChannelMuteView {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  reason: string;
+  expiresAt: string | null;
+  mutedAt: string;
+}
+
+export interface ChannelWarningView {
+  id: string;
+  channelId: string;
+  userId: string;
+  username: string;
+  moderatorUsername: string;
+  reason: string;
+  createdAt: string;
+}
+
 export interface ChannelView {
   id: string;
   slug: string;
@@ -138,12 +168,46 @@ export interface UpsertChannelBanInput {
   ownerId: string;
   targetUsername: string;
   reason: string;
+  channelSlugOrOwnerId?: string;
 }
 
 export interface UpsertChannelBanResult {
   ban: ChannelBanView;
   channelId: string;
   targetUserId: string;
+}
+
+export interface AddModeratorInput {
+  ownerId: string;
+  channelSlug?: string | undefined;
+  targetUsername: string;
+}
+
+export interface RemoveModeratorInput {
+  ownerId: string;
+  channelSlug?: string | undefined;
+  targetUsername: string;
+}
+
+export interface MuteUserInput {
+  actorUserId: string;
+  channelSlugOrOwnerId?: string;
+  targetUsername: string;
+  duration?: "1h" | "5h" | "1d" | "1w" | "1m" | "permanent";
+  reason?: string;
+}
+
+export interface UnmuteUserInput {
+  actorUserId: string;
+  channelSlugOrOwnerId?: string;
+  targetUsername: string;
+}
+
+export interface WarnUserInput {
+  actorUserId: string;
+  channelSlugOrOwnerId?: string;
+  targetUsername: string;
+  reason: string;
 }
 
 export class UniqueConstraintError extends Error {
@@ -184,11 +248,24 @@ export interface ChannelModelContract {
   updateSettings(input: UpdateChannelSettingsInput): Promise<ChannelView>;
   rotateStreamKey(ownerId: string, nextStreamKey: string): Promise<string>;
   banUserByUsername(input: UpsertChannelBanInput): Promise<UpsertChannelBanResult>;
-  unbanUserByUsername(ownerId: string, targetUsername: string): Promise<boolean>;
+  unbanUserByUsername(ownerId: string, targetUsername: string, channelSlugOrOwnerId?: string): Promise<boolean>;
   isUserBanned(channelSlugOrUsername: string, userId: string): Promise<{ isBanned: boolean; reason?: string }>;
   setFollowState(userId: string, channelSlug: string, follow: boolean): Promise<string[]>;
   getLiveChannels(excludeUserId?: string): Promise<PublicUserSummary[]>;
   setLiveStatus(ownerId: string, isLive: boolean): Promise<ChannelView>;
+  clearChatMessages(channelId: string): Promise<void>;
+
+  addModerator(input: AddModeratorInput): Promise<ChannelModeratorView>;
+  removeModerator(input: RemoveModeratorInput): Promise<boolean>;
+  listModerators(channelSlugOrOwnerId: string): Promise<ChannelModeratorView[]>;
+  isUserModerator(channelId: string, userId: string): Promise<boolean>;
+
+  muteUser(input: MuteUserInput): Promise<ChannelMuteView>;
+  unmuteUser(input: UnmuteUserInput): Promise<boolean>;
+  listMutes(channelSlugOrOwnerId: string): Promise<ChannelMuteView[]>;
+  getUserMute(channelId: string, userId: string): Promise<{ isMuted: boolean; expiresAt: string | null; reason: string }>;
+
+  warnUser(input: WarnUserInput): Promise<ChannelWarningView>;
 }
 
 export interface RefreshTokenModelContract {

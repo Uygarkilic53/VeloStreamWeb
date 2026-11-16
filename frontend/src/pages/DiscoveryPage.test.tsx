@@ -25,6 +25,13 @@ function renderWithAuth(ui: React.ReactElement, authOverrides: Partial<AuthConte
     banUser: vi.fn(),
     unbanUser: vi.fn(),
     markChannelBanned: vi.fn(),
+    listModerators: vi.fn(async () => ({ ok: true, moderators: [] })),
+    addModerator: vi.fn(async () => ({ ok: true })),
+    removeModerator: vi.fn(async () => ({ ok: true })),
+    listSilences: vi.fn(async () => ({ ok: true, silences: [] })),
+    silenceUser: vi.fn(async () => ({ ok: true })),
+    unsilenceUser: vi.fn(async () => ({ ok: true })),
+    sendWarning: vi.fn(async () => ({ ok: true })),
     ...authOverrides,
   };
 

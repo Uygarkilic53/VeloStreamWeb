@@ -1,6 +1,7 @@
 package middlewares
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/gofiber/contrib/websocket"
@@ -40,5 +41,19 @@ func extractBearerToken(c *fiber.Ctx) string {
 	if strings.HasPrefix(strings.ToLower(authHeader), "bearer ") {
 		return strings.TrimSpace(authHeader[7:])
 	}
-	return strings.TrimSpace(c.Query("token"))
+	rawToken := strings.TrimSpace(c.Query("token"))
+	if rawToken == "" {
+		return ""
+	}
+	// PathUnescape preserves '+' in Base64 signatures while percent-decoding '%20'
+	if unescaped, err := url.PathUnescape(rawToken); err == nil && unescaped != "" {
+		rawToken = strings.TrimSpace(unescaped)
+	}
+	if strings.HasPrefix(strings.ToLower(rawToken), "bearer+") {
+		return strings.TrimSpace(rawToken[7:])
+	}
+	if strings.HasPrefix(strings.ToLower(rawToken), "bearer ") {
+		return strings.TrimSpace(rawToken[7:])
+	}
+	return rawToken
 }

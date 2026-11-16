@@ -356,6 +356,7 @@ describe("UserModel and Prisma error helpers", () => {
 
     // End broadcast
     await memory.channels.setLiveStatus(userA.id, false);
+    await memory.channels.clearChatMessages(updatedChannel.id);
     const liveEnded = await memory.channels.getLiveChannels();
     expect(liveEnded).toEqual([]);
   });

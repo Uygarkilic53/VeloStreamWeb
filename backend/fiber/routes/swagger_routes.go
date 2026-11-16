@@ -95,7 +95,7 @@ const openAPISpecJSON = `{
     "/webhooks/mediamtx/event": {
       "post": {
         "summary": "MediaMTX Stream Lifecycle Event",
-        "description": "Receives runOnReady / runOnNotReady events, persists stream session and channel live status, and broadcasts stream.status over WebSockets.",
+        "description": "Receives runOnReady / runOnNotReady events, persists stream session and channel live status, clears chat messages on stream end, and broadcasts stream.status and chat.reset over WebSockets.",
         "tags": ["MediaMTX Webhooks"],
         "parameters": [
           {
@@ -175,7 +175,7 @@ const openAPISpecJSON = `{
     "/ws/live": {
       "get": {
         "summary": "Live Stream Status WebSocket Subscription",
-        "description": "Subscribes to global stream status updates (live/offline) across all channels without authentication.",
+        "description": "Subscribes to global stream status updates (live/offline) and real-time moderation events (moderation.banned and moderation.unbanned) across all channels without authentication.",
         "tags": ["WebSockets"],
         "responses": {
           "101": {
@@ -190,7 +190,7 @@ const openAPISpecJSON = `{
     "/ws/chat/{channelId}": {
       "get": {
         "summary": "Channel Chat & Moderation WebSocket Connection",
-        "description": "Connects to a channel chat room. Requires a valid JWT token query parameter.",
+        "description": "Connects to a channel chat room with realtime history, moderation (silence/unsilence, ban/unban, warnings), creator chat freeze/pause controls, slow mode rate-limiting (3s cooldown), and automatic silence persistence on reconnect. Requires a valid JWT token query parameter.",
         "tags": ["WebSockets"],
         "parameters": [
           {
@@ -227,10 +227,186 @@ const openAPISpecJSON = `{
           }
         }
       }
+    },
+    "/api/chat/{channelId}/messages": {
+      "get": {
+        "summary": "Channel Recent Chat Messages",
+        "description": "Retrieves recent chat history for the specified channel.",
+        "tags": ["Chat"],
+        "parameters": [
+          {
+            "name": "channelId",
+            "in": "path",
+            "required": true,
+            "description": "Channel ID or slug",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Max messages to return (default 50)",
+            "schema": {
+              "type": "integer",
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent messages list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "messages": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/ChatMessage" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/gifs/trending": {
+      "get": {
+        "summary": "Trending GIPHY GIFs",
+        "description": "Fetches currently trending GIFs from GIPHY with caching.",
+        "tags": ["Giphy"],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "default": 24 }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "default": 0 }
+          },
+          {
+            "name": "rating",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "default": "g" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Normalized trending GIFs response",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GiphyResponse" }
+              }
+            }
+          },
+          "502": {
+            "description": "GIPHY service unavailable"
+          }
+        }
+      }
+    },
+    "/api/gifs/search": {
+      "get": {
+        "summary": "Search GIPHY GIFs",
+        "description": "Searches GIPHY GIFs by query string with caching.",
+        "tags": ["Giphy"],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "default": 24 }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "default": 0 }
+          },
+          {
+            "name": "rating",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "default": "g" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results matching query",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GiphyResponse" }
+              }
+            }
+          },
+          "502": {
+            "description": "GIPHY service unavailable"
+          }
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "ChatMessage": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "channelId": { "type": "string" },
+          "userId": { "type": "string" },
+          "username": { "type": "string" },
+          "avatarUrl": { "type": "string", "nullable": true },
+          "role": { "type": "string", "enum": ["Creator", "Moderator", "User"] },
+          "content": { "type": "string" },
+          "messageType": { "type": "string", "enum": ["text", "gif"] },
+          "gifUrl": { "type": "string", "nullable": true },
+          "isDeleted": { "type": "boolean" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "GiphyGifItem": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "previewUrl": { "type": "string" },
+          "originalUrl": { "type": "string" },
+          "width": { "type": "integer" },
+          "height": { "type": "integer" }
+        }
+      },
+      "GiphyResponse": {
+        "type": "object",
+        "properties": {
+          "gifs": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GiphyGifItem" }
+          },
+          "pagination": {
+            "type": "object",
+            "properties": {
+              "totalCount": { "type": "integer" },
+              "count": { "type": "integer" },
+              "offset": { "type": "integer" }
+            }
+          }
+        }
+      },
       "MediaMTXAuthPayload": {
         "type": "object",
         "properties": {
@@ -261,6 +437,26 @@ const openAPISpecJSON = `{
           "path": { "type": "string", "example": "streamer" },
           "status": { "type": "string", "enum": ["live", "offline"], "example": "live" }
         }
+      },
+      "ModerationUnbanPayload": {
+        "type": "object",
+        "properties": {
+          "channelId": { "type": "string" },
+          "channelSlug": { "type": "string" },
+          "userId": { "type": "string" },
+          "username": { "type": "string" }
+        },
+        "required": ["channelId", "userId"]
+      },
+      "ChatSlowModePayload": {
+        "type": "object",
+        "properties": {
+          "channelId": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "cooldownSeconds": { "type": "integer", "example": 3 },
+          "initial": { "type": "boolean" }
+        },
+        "required": ["channelId", "enabled"]
       },
       "ErrorResponse": {
         "type": "object",

@@ -93,6 +93,7 @@ export function StudioPage({
   const [revealKey, setRevealKey] = useState(false);
   const [copiedField, setCopiedField] = useState<"whip" | "rtmp" | "key" | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [chatResetKey, setChatResetKey] = useState(0);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [streamResolution, setStreamResolution] = useState<string>("");
   const [micLevel, setMicLevel] = useState(0);
@@ -878,6 +879,7 @@ export function StudioPage({
       if (user?.sessionKind !== "preview" && user?.accessToken) {
         void setChannelLiveApi(false, user.accessToken);
       }
+      setChatResetKey((prev) => prev + 1);
       onSetBroadcastLive(false, { title: titleInput, category: categoryInput });
       toast.success("Broadcast ended.");
     } catch {
@@ -1535,6 +1537,18 @@ export function StudioPage({
             channelSlug={channelSlug}
             wsUrl={wsUrl}
             creatorMode={true}
+            resetKey={chatResetKey}
+            onViewProfile={(targetUsername) => {
+              if (
+                user &&
+                user.username.replace(/^@/, "").toLowerCase() ===
+                  targetUsername.replace(/^@/, "").toLowerCase()
+              ) {
+                onNavigate({ page: "profile" });
+              } else {
+                onNavigate({ page: "watch", slug: targetUsername.replace(/^@/, "") });
+              }
+            }}
           />
         </div>
       </div>

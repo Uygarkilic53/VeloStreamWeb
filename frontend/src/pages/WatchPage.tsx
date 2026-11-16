@@ -42,7 +42,13 @@ export function WatchPage({
   const [copiedShare, setCopiedShare] = useState(false);
 
   const isUserBanned =
-    isBanned || Boolean(user && user.bannedFromSlugs?.includes(channel.slug.toLowerCase()));
+    isBanned ||
+    Boolean(
+      user &&
+        user.bannedFromSlugs?.some(
+          (s) => s.trim().replace(/^@/, "").toLowerCase() === channel.slug.trim().replace(/^@/, "").toLowerCase(),
+        ),
+    );
 
   useEffect(() => {
     if (isUserBanned) {
@@ -269,6 +275,17 @@ export function WatchPage({
         channelSlug={channel.slug}
         wsUrl={wsUrl}
         isLive={channel.isLive}
+        onViewProfile={(targetUsername) => {
+          if (
+            user &&
+            user.username.replace(/^@/, "").toLowerCase() ===
+              targetUsername.replace(/^@/, "").toLowerCase()
+          ) {
+            onNavigate({ page: "profile" });
+          } else {
+            onNavigate({ page: "watch", slug: targetUsername.replace(/^@/, "") });
+          }
+        }}
       />
     </div>
   );

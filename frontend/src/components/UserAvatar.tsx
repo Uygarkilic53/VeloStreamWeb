@@ -5,9 +5,9 @@ type AvatarSize = "sm" | "md" | "lg" | "xl";
 interface UserAvatarProps {
   displayName: string;
   username: string;
-  avatarUrl?: string | null;
-  size?: AvatarSize;
-  className?: string;
+  avatarUrl?: string | null | undefined;
+  size?: AvatarSize | undefined;
+  className?: string | undefined;
 }
 
 const SIZE_CLASSES: Record<AvatarSize, string> = {

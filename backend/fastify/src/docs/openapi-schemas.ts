@@ -32,6 +32,48 @@ const ChannelBanSchema = {
   required: ["id", "userId", "username", "reason", "bannedAt", "expiresAt"],
 } as const;
 
+const ChannelModeratorSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    userId: { type: "string" },
+    username: { type: "string" },
+    displayName: { type: "string" },
+    avatarUrl: { type: ["string", "null"], format: "uri" },
+    assignedAt: { type: "string", format: "date-time" },
+  },
+  required: ["id", "userId", "username", "displayName", "assignedAt"],
+} as const;
+
+const ChannelMuteSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    userId: { type: "string" },
+    username: { type: "string" },
+    displayName: { type: "string" },
+    avatarUrl: { type: ["string", "null"], format: "uri" },
+    reason: { type: "string" },
+    expiresAt: { type: ["string", "null"], format: "date-time" },
+    mutedAt: { type: "string", format: "date-time" },
+  },
+  required: ["id", "userId", "username", "displayName", "reason", "mutedAt"],
+} as const;
+
+const ChannelWarningSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    channelId: { type: "string" },
+    userId: { type: "string" },
+    username: { type: "string" },
+    moderatorUsername: { type: "string" },
+    reason: { type: "string" },
+    createdAt: { type: "string", format: "date-time" },
+  },
+  required: ["id", "channelId", "userId", "username", "moderatorUsername", "reason", "createdAt"],
+} as const;
+
 const ChannelSchema = {
   type: "object",
   properties: {
@@ -561,7 +603,7 @@ export const rotateStreamKeyRouteSchema: FastifySchema = {
 
 export const banUserRouteSchema: FastifySchema = {
   tags: ["Moderation"],
-  summary: "Ban a user from your channel",
+  summary: "Ban a user from channel chat and viewing",
   security: [{ bearerAuth: [] }],
   body: {
     type: "object",
@@ -569,6 +611,7 @@ export const banUserRouteSchema: FastifySchema = {
     properties: {
       username: { type: "string" },
       reason: { type: "string", maxLength: 200 },
+      channelSlug: { type: "string" },
     },
   },
   response: {
@@ -582,14 +625,109 @@ export const banUserRouteSchema: FastifySchema = {
     },
     400: ErrorResponseSchema,
     401: ErrorResponseSchema,
+    403: ErrorResponseSchema,
     404: ErrorResponseSchema,
   },
 };
 
 export const unbanUserRouteSchema: FastifySchema = {
   tags: ["Moderation"],
-  summary: "Unban a user from your channel",
+  summary: "Unban a user from channel",
   security: [{ bearerAuth: [] }],
+  params: {
+    type: "object",
+    required: ["username"],
+    properties: {
+      username: { type: "string" },
+    },
+  },
+  querystring: {
+    type: "object",
+    properties: {
+      channelSlug: { type: "string" },
+    },
+  },
+  response: {
+    200: {
+      type: "object",
+      properties: {
+        ok: { type: "boolean" },
+        username: { type: "string" },
+        message: { type: "string" },
+      },
+      required: ["ok"],
+    },
+    400: ErrorResponseSchema,
+    401: ErrorResponseSchema,
+    403: ErrorResponseSchema,
+    404: ErrorResponseSchema,
+  },
+};
+
+export const listModeratorsRouteSchema: FastifySchema = {
+  tags: ["Moderation"],
+  summary: "List channel moderators",
+  security: [{ bearerAuth: [] }],
+  querystring: {
+    type: "object",
+    properties: {
+      channelSlug: { type: "string" },
+    },
+  },
+  response: {
+    200: {
+      type: "object",
+      properties: {
+        moderators: {
+          type: "array",
+          items: ChannelModeratorSchema,
+        },
+      },
+      required: ["moderators"],
+    },
+    401: ErrorResponseSchema,
+    503: ErrorResponseSchema,
+  },
+};
+
+export const addModeratorRouteSchema: FastifySchema = {
+  tags: ["Moderation"],
+  summary: "Assign a user as channel moderator",
+  security: [{ bearerAuth: [] }],
+  body: {
+    type: "object",
+    required: ["username"],
+    properties: {
+      channelSlug: { type: "string" },
+      username: { type: "string" },
+    },
+  },
+  response: {
+    201: {
+      type: "object",
+      properties: {
+        moderator: ChannelModeratorSchema,
+        message: { type: "string" },
+      },
+      required: ["moderator"],
+    },
+    400: ErrorResponseSchema,
+    401: ErrorResponseSchema,
+    403: ErrorResponseSchema,
+    404: ErrorResponseSchema,
+  },
+};
+
+export const removeModeratorRouteSchema: FastifySchema = {
+  tags: ["Moderation"],
+  summary: "Remove channel moderator role",
+  security: [{ bearerAuth: [] }],
+  querystring: {
+    type: "object",
+    properties: {
+      channelSlug: { type: "string" },
+    },
+  },
   params: {
     type: "object",
     required: ["username"],
@@ -609,6 +747,130 @@ export const unbanUserRouteSchema: FastifySchema = {
     },
     400: ErrorResponseSchema,
     401: ErrorResponseSchema,
+    403: ErrorResponseSchema,
+    404: ErrorResponseSchema,
+  },
+};
+
+export const listSilencesRouteSchema: FastifySchema = {
+  tags: ["Moderation"],
+  summary: "List currently silenced channel users",
+  security: [{ bearerAuth: [] }],
+  querystring: {
+    type: "object",
+    properties: {
+      channelSlug: { type: "string" },
+    },
+  },
+  response: {
+    200: {
+      type: "object",
+      properties: {
+        silences: {
+          type: "array",
+          items: ChannelMuteSchema,
+        },
+      },
+      required: ["silences"],
+    },
+    401: ErrorResponseSchema,
+    503: ErrorResponseSchema,
+  },
+};
+
+export const silenceUserRouteSchema: FastifySchema = {
+  tags: ["Moderation"],
+  summary: "Silence / mute a user in channel chat",
+  security: [{ bearerAuth: [] }],
+  body: {
+    type: "object",
+    required: ["username"],
+    properties: {
+      username: { type: "string" },
+      duration: {
+        type: "string",
+        enum: ["1h", "5h", "1d", "1w", "1m", "permanent"],
+        default: "1h",
+      },
+      reason: { type: "string", maxLength: 200 },
+      channelSlug: { type: "string" },
+    },
+  },
+  response: {
+    201: {
+      type: "object",
+      properties: {
+        mute: ChannelMuteSchema,
+        message: { type: "string" },
+      },
+      required: ["mute"],
+    },
+    400: ErrorResponseSchema,
+    401: ErrorResponseSchema,
+    403: ErrorResponseSchema,
+    404: ErrorResponseSchema,
+  },
+};
+
+export const unsilenceUserRouteSchema: FastifySchema = {
+  tags: ["Moderation"],
+  summary: "Unsilence / unmute a user in channel chat",
+  security: [{ bearerAuth: [] }],
+  params: {
+    type: "object",
+    required: ["username"],
+    properties: {
+      username: { type: "string" },
+    },
+  },
+  querystring: {
+    type: "object",
+    properties: {
+      channelSlug: { type: "string" },
+    },
+  },
+  response: {
+    200: {
+      type: "object",
+      properties: {
+        ok: { type: "boolean" },
+        username: { type: "string" },
+        message: { type: "string" },
+      },
+      required: ["ok"],
+    },
+    400: ErrorResponseSchema,
+    401: ErrorResponseSchema,
+    403: ErrorResponseSchema,
+    404: ErrorResponseSchema,
+  },
+};
+
+export const warnUserRouteSchema: FastifySchema = {
+  tags: ["Moderation"],
+  summary: "Record and broadcast a moderation warning to a user",
+  security: [{ bearerAuth: [] }],
+  body: {
+    type: "object",
+    required: ["username", "reason"],
+    properties: {
+      username: { type: "string" },
+      reason: { type: "string", minLength: 1, maxLength: 300 },
+      channelSlug: { type: "string" },
+    },
+  },
+  response: {
+    201: {
+      type: "object",
+      properties: {
+        warning: ChannelWarningSchema,
+        message: { type: "string" },
+      },
+      required: ["warning"],
+    },
+    400: ErrorResponseSchema,
+    401: ErrorResponseSchema,
+    403: ErrorResponseSchema,
     404: ErrorResponseSchema,
   },
 };
@@ -634,6 +896,7 @@ export const getLiveChannelsRouteSchema: FastifySchema = {
 export const setChannelLiveRouteSchema: FastifySchema = {
   tags: ["Channels"],
   summary: "Update broadcast live status for the authenticated user's channel",
+  description: "Update broadcast live status for the authenticated user's channel. When ending broadcast (isLive: false), channel chat messages are automatically reset and cleared.",
   security: [{ bearerAuth: [] }],
   body: {
     type: "object",

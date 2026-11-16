@@ -46,11 +46,23 @@ function renderWithAuth(ui: React.ReactElement, user: UserAccount | null = null)
     banUser: vi.fn(),
     unbanUser: vi.fn(),
     markChannelBanned: vi.fn(),
+    listModerators: vi.fn(async () => ({ ok: true, moderators: [] })),
+    addModerator: vi.fn(async () => ({ ok: true })),
+    removeModerator: vi.fn(async () => ({ ok: true })),
+    listSilences: vi.fn(async () => ({ ok: true, silences: [] })),
+    silenceUser: vi.fn(async () => ({ ok: true })),
+    unsilenceUser: vi.fn(async () => ({ ok: true })),
+    sendWarning: vi.fn(async () => ({ ok: true })),
   };
 
-  return render(
+  const renderResult = render(
     <AuthContext.Provider value={authValue}>{ui}</AuthContext.Provider>,
   );
+  return {
+    ...renderResult,
+    rerender: (newUi: React.ReactElement) =>
+      renderResult.rerender(<AuthContext.Provider value={authValue}>{newUi}</AuthContext.Provider>),
+  };
 }
 
 describe("WatchPage - Banned user state", () => {
@@ -119,5 +131,37 @@ describe("WatchPage - Banned user state", () => {
     expect(screen.getByRole("heading", { name: /channel unavailable/i })).toBeInTheDocument();
     expect(screen.getByText(/@alice_stream has banned you from viewing their channel\./i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/stream chat/i)).not.toBeInTheDocument();
+  });
+
+  it("dynamically transitions from banned view to live stream view when unbanned without page refresh", () => {
+    const { rerender } = renderWithAuth(
+      <WatchPage
+        channel={mockChannel}
+        hlsBaseUrl="http://localhost:8888"
+        wsUrl="ws://localhost:3002"
+        onNavigate={vi.fn()}
+        onSelectCategory={vi.fn()}
+        isBanned={true}
+        banReason="Violated community guidelines"
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: /channel unavailable/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/stream chat/i)).not.toBeInTheDocument();
+
+    // Dynamically unbanned (isBanned flips to false)
+    rerender(
+      <WatchPage
+        channel={mockChannel}
+        hlsBaseUrl="http://localhost:8888"
+        wsUrl="ws://localhost:3002"
+        onNavigate={vi.fn()}
+        onSelectCategory={vi.fn()}
+        isBanned={false}
+      />,
+    );
+
+    expect(screen.queryByRole("heading", { name: /channel unavailable/i })).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/stream chat/i)).toBeInTheDocument();
   });
 });

@@ -19,6 +19,10 @@ export function createChannelController(deps: ControllerDeps) {
 
       const channel = await models.channels.setLiveStatus(authUser.id, isLive);
 
+      if (!isLive) {
+        await models.channels.clearChatMessages(channel.id);
+      }
+
       // Best-effort push to Fiber real-time hub
       try {
         const fiberUrl = process.env.REALTIME_HTTP_URL || "http://localhost:3002";

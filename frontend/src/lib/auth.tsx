@@ -40,6 +40,36 @@ export interface BannedChatUser {
   reason: string;
 }
 
+export interface ChannelModeratorView {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  assignedAt: string;
+}
+
+export interface ChannelMuteView {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  reason: string;
+  expiresAt: string | null;
+  mutedAt: string;
+}
+
+export interface ChannelWarningView {
+  id: string;
+  channelId: string;
+  userId: string;
+  username: string;
+  moderatorUsername: string;
+  reason: string;
+  createdAt: string;
+}
+
 export interface UserAccount {
   id: string;
   username: string;
@@ -307,10 +337,18 @@ export interface AuthContextValue {
     newPassword: string;
     confirmPassword: string;
   }) => Promise<AuthAttemptResult>;
-  unbanUser: (username: string) => Promise<AuthAttemptResult>;
-  banUser: (username: string, reason?: string) => Promise<AuthAttemptResult>;
+  unbanUser: (username: string, channelSlug?: string) => Promise<AuthAttemptResult>;
+  banUser: (username: string, reason?: string, channelSlug?: string) => Promise<AuthAttemptResult>;
+  listModerators: (channelSlug?: string) => Promise<{ ok: boolean; moderators?: ChannelModeratorView[]; error?: string }>;
+  addModerator: (username: string, channelSlug?: string) => Promise<AuthAttemptResult>;
+  removeModerator: (username: string, channelSlug?: string) => Promise<AuthAttemptResult>;
+  listSilences: (channelSlug?: string) => Promise<{ ok: boolean; silences?: ChannelMuteView[]; error?: string }>;
+  silenceUser: (username: string, duration?: string, reason?: string, channelSlug?: string) => Promise<AuthAttemptResult>;
+  unsilenceUser: (username: string, channelSlug?: string) => Promise<AuthAttemptResult>;
+  sendWarning: (username: string, reason: string, channelSlug?: string) => Promise<AuthAttemptResult>;
   toggleFollow: (slug: string) => Promise<AuthAttemptResult>;
   markChannelBanned: (slug: string) => void;
+  clearChannelBanned?: (slug: string) => void;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -1241,7 +1279,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const banUser = useCallback(
-    async (username: string, reason = "Moderator action in chat"): Promise<AuthAttemptResult> => {
+    async (
+      username: string,
+      reason = "Moderator action in chat",
+      channelSlug?: string,
+    ): Promise<AuthAttemptResult> => {
       const validation = BanUserValidationSchema.safeParse({ username, reason });
       if (!validation.success) {
         const formatted = extractZodFieldErrors(validation.error);
@@ -1278,6 +1320,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify({
             username: clean,
             reason: validation.data.reason || reason,
+            channelSlug,
           }),
         });
         if (!response.ok) {
@@ -1335,7 +1378,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const unbanUser = useCallback(
-    async (username: string): Promise<AuthAttemptResult> => {
+    async (username: string, channelSlug?: string): Promise<AuthAttemptResult> => {
       const clean = username.trim().replace(/^@/, "");
       if (!user) {
         return { ok: false, error: "Sign in to manage channel bans." };
@@ -1354,10 +1397,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       try {
-        const response = await authorizedFetch(
-          `/api/v1/moderation/bans/${encodeURIComponent(clean)}`,
-          { method: "DELETE" },
-        );
+        const url = channelSlug
+          ? `/api/v1/moderation/bans/${encodeURIComponent(clean)}?channelSlug=${encodeURIComponent(channelSlug)}`
+          : `/api/v1/moderation/bans/${encodeURIComponent(clean)}`;
+        const response = await authorizedFetch(url, { method: "DELETE" });
         if (!response.ok) {
           const errInfo = await parseErrorResponse(response);
           return { ok: false, error: errInfo.message };
@@ -1393,6 +1436,226 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     },
     [authorizedFetch, user],
+  );
+
+  const listModerators = useCallback(
+    async (
+      channelSlug?: string,
+    ): Promise<{ ok: boolean; moderators?: ChannelModeratorView[]; error?: string }> => {
+      if (!user) return { ok: false, error: "Sign in required." };
+      if (user.sessionKind === "preview") {
+        return {
+          ok: true,
+          moderators: [
+            {
+              id: "cmod_preview",
+              userId: "u_preview_mod",
+              username: "sarah_j",
+              displayName: "Sarah Jenkins",
+              avatarUrl: null,
+              assignedAt: new Date(Date.now() - 86400000).toISOString(),
+            },
+          ],
+        };
+      }
+      try {
+        const cleanSlug = channelSlug ? channelSlug.trim().replace(/^@/, "") : "";
+        const url = cleanSlug
+          ? `/api/v1/moderation/moderators?channelSlug=${encodeURIComponent(cleanSlug)}`
+          : "/api/v1/moderation/moderators";
+        const response = await authorizedFetch(url);
+        if (!response.ok) {
+          const errInfo = await parseErrorResponse(response);
+          return { ok: false, error: errInfo.message };
+        }
+        const data = (await response.json()) as { moderators: ChannelModeratorView[] };
+        return { ok: true, moderators: data.moderators || [] };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Failed to load moderators." };
+      }
+    },
+    [user, authorizedFetch],
+  );
+
+  const addModerator = useCallback(
+    async (username: string, channelSlug?: string): Promise<AuthAttemptResult> => {
+      const clean = username.trim().replace(/^@/, "");
+      if (!user) return { ok: false, error: "Sign in required." };
+      if (user.sessionKind === "preview") {
+        return { ok: true, message: `@${clean} is now a channel moderator.` };
+      }
+      try {
+        const bodyPayload: Record<string, string> = { username: clean };
+        if (channelSlug) {
+          bodyPayload.channelSlug = channelSlug.trim().replace(/^@/, "");
+        }
+        const response = await authorizedFetch("/api/v1/moderation/moderators", {
+          method: "POST",
+          body: JSON.stringify(bodyPayload),
+        });
+        if (!response.ok) {
+          const errInfo = await parseErrorResponse(response);
+          return { ok: false, error: errInfo.message };
+        }
+        const data = (await response.json()) as { message?: string };
+        return { ok: true, message: data.message ?? `@${clean} is now a channel moderator.` };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Failed to add moderator." };
+      }
+    },
+    [user, authorizedFetch],
+  );
+
+  const removeModerator = useCallback(
+    async (username: string, channelSlug?: string): Promise<AuthAttemptResult> => {
+      const clean = username.trim().replace(/^@/, "");
+      if (!user) return { ok: false, error: "Sign in required." };
+      if (user.sessionKind === "preview") {
+        return { ok: true, message: `Removed moderator privileges for @${clean}.` };
+      }
+      try {
+        const query = channelSlug ? `?channelSlug=${encodeURIComponent(channelSlug.trim().replace(/^@/, ""))}` : "";
+        const response = await authorizedFetch(
+          `/api/v1/moderation/moderators/${encodeURIComponent(clean)}${query}`,
+          { method: "DELETE" },
+        );
+        if (!response.ok) {
+          const errInfo = await parseErrorResponse(response);
+          return { ok: false, error: errInfo.message };
+        }
+        const data = (await response.json()) as { message?: string };
+        return { ok: true, message: data.message ?? `Removed moderator privileges for @${clean}.` };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Failed to remove moderator." };
+      }
+    },
+    [user, authorizedFetch],
+  );
+
+  const listSilences = useCallback(
+    async (
+      channelSlug?: string,
+    ): Promise<{ ok: boolean; silences?: ChannelMuteView[]; error?: string }> => {
+      if (!user) return { ok: false, error: "Sign in required." };
+      if (user.sessionKind === "preview") {
+        return {
+          ok: true,
+          silences: [
+            {
+              id: "mute_preview",
+              userId: "u_preview_mute",
+              username: "troll_user",
+              displayName: "Troll User",
+              avatarUrl: null,
+              reason: "Spam in chat",
+              expiresAt: new Date(Date.now() + 3600000).toISOString(),
+              mutedAt: new Date(Date.now() - 1800000).toISOString(),
+            },
+          ],
+        };
+      }
+      try {
+        const cleanSlug = channelSlug ? channelSlug.trim().replace(/^@/, "") : "";
+        const url = cleanSlug
+          ? `/api/v1/moderation/silences?channelSlug=${encodeURIComponent(cleanSlug)}`
+          : "/api/v1/moderation/silences";
+        const response = await authorizedFetch(url);
+        if (!response.ok) {
+          const errInfo = await parseErrorResponse(response);
+          return { ok: false, error: errInfo.message };
+        }
+        const data = (await response.json()) as { silences: ChannelMuteView[] };
+        return { ok: true, silences: data.silences || [] };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Failed to load silenced users." };
+      }
+    },
+    [user, authorizedFetch],
+  );
+
+  const silenceUser = useCallback(
+    async (
+      username: string,
+      duration = "1h",
+      reason = "Channel moderation action",
+      channelSlug?: string,
+    ): Promise<AuthAttemptResult> => {
+      const clean = username.trim().replace(/^@/, "");
+      if (!user) return { ok: false, error: "Sign in required." };
+      if (user.sessionKind === "preview") {
+        return { ok: true, message: `@${clean} has been silenced.` };
+      }
+      try {
+        const cleanSlug = channelSlug ? channelSlug.trim().replace(/^@/, "") : undefined;
+        const response = await authorizedFetch("/api/v1/moderation/silences", {
+          method: "POST",
+          body: JSON.stringify({ username: clean, duration, reason, channelSlug: cleanSlug }),
+        });
+        if (!response.ok) {
+          const errInfo = await parseErrorResponse(response);
+          return { ok: false, error: errInfo.message };
+        }
+        const data = (await response.json()) as { message?: string };
+        return { ok: true, message: data.message ?? `@${clean} has been silenced.` };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Failed to silence user." };
+      }
+    },
+    [user, authorizedFetch],
+  );
+
+  const unsilenceUser = useCallback(
+    async (username: string, channelSlug?: string): Promise<AuthAttemptResult> => {
+      const clean = username.trim().replace(/^@/, "");
+      if (!user) return { ok: false, error: "Sign in required." };
+      if (user.sessionKind === "preview") {
+        return { ok: true, message: `Unsilenced @${clean}.` };
+      }
+      try {
+        const cleanSlug = channelSlug ? channelSlug.trim().replace(/^@/, "") : "";
+        const url = cleanSlug
+          ? `/api/v1/moderation/silences/${encodeURIComponent(clean)}?channelSlug=${encodeURIComponent(cleanSlug)}`
+          : `/api/v1/moderation/silences/${encodeURIComponent(clean)}`;
+        const response = await authorizedFetch(url, {
+          method: "DELETE",
+        });
+        if (!response.ok) {
+          const errInfo = await parseErrorResponse(response);
+          return { ok: false, error: errInfo.message };
+        }
+        const data = (await response.json()) as { message?: string };
+        return { ok: true, message: data.message ?? `Unsilenced @${clean}.` };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Failed to unsilence user." };
+      }
+    },
+    [user, authorizedFetch],
+  );
+
+  const sendWarning = useCallback(
+    async (username: string, reason: string, channelSlug?: string): Promise<AuthAttemptResult> => {
+      const clean = username.trim().replace(/^@/, "");
+      if (!user) return { ok: false, error: "Sign in required." };
+      if (user.sessionKind === "preview") {
+        return { ok: true, message: `Warning sent to @${clean}.` };
+      }
+      try {
+        const cleanSlug = channelSlug ? channelSlug.trim().replace(/^@/, "") : undefined;
+        const response = await authorizedFetch("/api/v1/moderation/warnings", {
+          method: "POST",
+          body: JSON.stringify({ username: clean, reason, channelSlug: cleanSlug }),
+        });
+        if (!response.ok) {
+          const errInfo = await parseErrorResponse(response);
+          return { ok: false, error: errInfo.message };
+        }
+        const data = (await response.json()) as { message?: string };
+        return { ok: true, message: data.message ?? `Warning sent to @${clean}.` };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : "Failed to send warning." };
+      }
+    },
+    [user, authorizedFetch],
   );
 
   const toggleFollow = useCallback(
@@ -1456,11 +1719,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!clean) return;
     setUser((prev) => {
       if (!prev) return prev;
-      if (prev.bannedFromSlugs.includes(clean)) return prev;
+      if (prev.bannedFromSlugs.some((s) => s.trim().replace(/^@/, "").toLowerCase() === clean)) {
+        return prev;
+      }
       return {
         ...prev,
         bannedFromSlugs: [...prev.bannedFromSlugs, clean],
-        followedSlugs: prev.followedSlugs.filter((s) => s.toLowerCase() !== clean),
+        followedSlugs: prev.followedSlugs.filter(
+          (s) => s.trim().replace(/^@/, "").toLowerCase() !== clean,
+        ),
+      };
+    });
+  }, []);
+
+  const clearChannelBanned = useCallback((slug: string) => {
+    const clean = slug.trim().replace(/^@/, "").toLowerCase();
+    if (!clean) return;
+    setUser((prev) => {
+      if (!prev) return prev;
+      const exists = prev.bannedFromSlugs.some(
+        (s) => s.trim().replace(/^@/, "").toLowerCase() === clean,
+      );
+      if (!exists) return prev;
+      return {
+        ...prev,
+        bannedFromSlugs: prev.bannedFromSlugs.filter(
+          (s) => s.trim().replace(/^@/, "").toLowerCase() !== clean,
+        ),
       };
     });
   }, []);
@@ -1483,8 +1768,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       changePassword,
       unbanUser,
       banUser,
+      listModerators,
+      addModerator,
+      removeModerator,
+      listSilences,
+      silenceUser,
+      unsilenceUser,
+      sendWarning,
       toggleFollow,
       markChannelBanned,
+      clearChannelBanned,
     }),
     [
       user,
@@ -1503,8 +1796,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       changePassword,
       unbanUser,
       banUser,
+      listModerators,
+      addModerator,
+      removeModerator,
+      listSilences,
+      silenceUser,
+      unsilenceUser,
+      sendWarning,
       toggleFollow,
       markChannelBanned,
+      clearChannelBanned,
     ],
   );
 

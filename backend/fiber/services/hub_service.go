@@ -3,7 +3,9 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/velostream/fiber/models"
 )
@@ -34,6 +36,7 @@ const (
 	eventBroadcast
 	eventEvictUser
 	eventRoomSize
+	eventSendToUser
 )
 
 type hubEvent struct {
@@ -49,18 +52,109 @@ type hubEvent struct {
 
 // HubService manages WebSocket rooms and client connections inside a single actor goroutine.
 type HubService struct {
-	events    chan hubEvent
-	done      chan struct{}
-	snapMu    sync.RWMutex
-	snapshots map[string][]byte
+	events      chan hubEvent
+	done        chan struct{}
+	snapMu      sync.RWMutex
+	snapshots   map[string][]byte
+	freezeMu    sync.RWMutex
+	frozenRooms map[string]bool
+	slowMu      sync.RWMutex
+	slowRooms   map[string]int
+	userMsgMu   sync.Mutex
+	lastUserMsg map[string]time.Time
 }
 
 func NewHubService() *HubService {
 	return &HubService{
-		events:    make(chan hubEvent, 256),
-		done:      make(chan struct{}),
-		snapshots: make(map[string][]byte),
+		events:      make(chan hubEvent, 256),
+		done:        make(chan struct{}),
+		snapshots:   make(map[string][]byte),
+		frozenRooms: make(map[string]bool),
+		slowRooms:   make(map[string]int),
+		lastUserMsg: make(map[string]time.Time),
 	}
+}
+
+func (h *HubService) SetRoomSlowMode(channelID string, enabled bool, cooldownSeconds int) {
+	h.slowMu.Lock()
+	defer h.slowMu.Unlock()
+	clean := strings.ToLower(strings.TrimSpace(channelID))
+	if clean == "" {
+		return
+	}
+	if enabled {
+		if cooldownSeconds <= 0 {
+			cooldownSeconds = 3
+		}
+		h.slowRooms[clean] = cooldownSeconds
+	} else {
+		delete(h.slowRooms, clean)
+	}
+}
+
+func (h *HubService) IsRoomSlowMode(channelID string) bool {
+	h.slowMu.RLock()
+	defer h.slowMu.RUnlock()
+	clean := strings.ToLower(strings.TrimSpace(channelID))
+	return h.slowRooms[clean] > 0
+}
+
+func (h *HubService) GetRoomSlowModeCooldown(channelID string) int {
+	h.slowMu.RLock()
+	defer h.slowMu.RUnlock()
+	clean := strings.ToLower(strings.TrimSpace(channelID))
+	cd := h.slowRooms[clean]
+	if cd <= 0 {
+		return 3
+	}
+	return cd
+}
+
+func (h *HubService) CheckAndRecordUserMessage(channelID, userID string, cooldown time.Duration) bool {
+	h.userMsgMu.Lock()
+	defer h.userMsgMu.Unlock()
+	clean := strings.ToLower(strings.TrimSpace(channelID))
+	user := strings.ToLower(strings.TrimSpace(userID))
+	if clean == "" || user == "" {
+		return true
+	}
+	key := clean + ":" + user
+	now := time.Now()
+	if last, exists := h.lastUserMsg[key]; exists {
+		if now.Sub(last) < cooldown {
+			return false
+		}
+	}
+	h.lastUserMsg[key] = now
+	if len(h.lastUserMsg) > 5000 {
+		for k, t := range h.lastUserMsg {
+			if now.Sub(t) > 5*time.Minute {
+				delete(h.lastUserMsg, k)
+			}
+		}
+	}
+	return true
+}
+
+func (h *HubService) SetRoomFrozen(channelID string, isFrozen bool) {
+	h.freezeMu.Lock()
+	defer h.freezeMu.Unlock()
+	clean := strings.ToLower(strings.TrimSpace(channelID))
+	if clean == "" {
+		return
+	}
+	if isFrozen {
+		h.frozenRooms[clean] = true
+	} else {
+		delete(h.frozenRooms, clean)
+	}
+}
+
+func (h *HubService) IsRoomFrozen(channelID string) bool {
+	h.freezeMu.RLock()
+	defer h.freezeMu.RUnlock()
+	clean := strings.ToLower(strings.TrimSpace(channelID))
+	return h.frozenRooms[clean]
 }
 
 func (h *HubService) SaveSnapshot(channelID string, frameBytes []byte) {
@@ -159,21 +253,41 @@ func (h *HubService) Run(ctx context.Context) {
 						"reason":    ev.reason,
 					},
 				})
+				var evictedClients []*Client
 				for c := range clients {
-					if c.UserID != ev.userID {
-						continue
-					}
-					if err == nil {
+					if c.UserID == ev.userID || strings.EqualFold(c.Username, ev.userID) {
+						if err == nil {
+							select {
+							case c.Send <- banFrame:
+							default:
+							}
+						}
+						evictedClients = append(evictedClients, c)
+					} else if err == nil {
 						select {
 						case c.Send <- banFrame:
 						default:
 						}
 					}
+				}
+				for _, c := range evictedClients {
 					removeClient(c)
 				}
 
 			case eventRoomSize:
 				ev.sizeReply <- len(rooms[ev.channelID])
+
+			case eventSendToUser:
+				clients := rooms[ev.channelID]
+				for c := range clients {
+					if c.UserID == ev.userID || strings.EqualFold(c.Username, ev.userID) {
+						select {
+						case c.Send <- ev.data:
+						default:
+							removeClient(c)
+						}
+					}
+				}
 			}
 		}
 	}
@@ -215,6 +329,13 @@ func (h *HubService) Broadcast(channelID string, data []byte) {
 func (h *HubService) EvictUser(channelID, userID, reason string) {
 	select {
 	case h.events <- hubEvent{kind: eventEvictUser, channelID: channelID, userID: userID, reason: reason}:
+	case <-h.done:
+	}
+}
+
+func (h *HubService) SendToUser(channelID, userID string, data []byte) {
+	select {
+	case h.events <- hubEvent{kind: eventSendToUser, channelID: channelID, userID: userID, data: data}:
 	case <-h.done:
 	}
 }

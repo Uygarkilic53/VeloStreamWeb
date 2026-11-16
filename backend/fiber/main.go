@@ -35,6 +35,7 @@ func main() {
 	}
 
 	var streamRepo models.StreamRepository
+	var chatModel *models.ChatModel
 	if cfg.DatabaseURL != "" {
 		pool, dbErr := config.ConnectDatabase(ctx, cfg.DatabaseURL)
 		if dbErr != nil {
@@ -42,6 +43,7 @@ func main() {
 		}
 		defer pool.Close()
 		streamRepo = models.NewStreamModel(pool)
+		chatModel = models.NewChatModel(pool)
 	}
 
 	hubSvc := services.NewHubService()
@@ -54,6 +56,8 @@ func main() {
 		JwtService:         jwtSvc,
 		MediaWebhookSecret: cfg.MediaWebhookSecret,
 		StreamRepo:         streamRepo,
+		ChatModel:          chatModel,
+		GiphyAPIKey:        cfg.GiphyAPIKey,
 	})
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)

@@ -145,7 +145,12 @@ describe("Index searchbar, user search (online & offline), and health removal", 
     expect(screen.getByRole("heading", { name: /go & rust notes/i })).toBeInTheDocument();
   });
 
-  it("excludes banned creators from search and displays banned screen when navigating to their channel", async () => {
+  it("excludes banned creators from search and displays banned screen when navigating to their channel, then synchronizes unban in real-time", async () => {
+    const originalWebSocket = globalThis.WebSocket;
+    globalThis.WebSocket = MockLiveWebSocket as unknown as typeof WebSocket;
+
+    let isAlexBanned = true;
+
     // Store authenticated session for a user who was banned by alex_dev
     window.localStorage.setItem(
       "velostream_auth_session",
@@ -189,15 +194,32 @@ describe("Index searchbar, user search (online & offline), and health removal", 
       }
 
       if (url.includes("/api/v1/users/alex_dev")) {
+        if (isAlexBanned) {
+          return new Response(
+            JSON.stringify({
+              error: "USER_BANNED",
+              message: "You have been banned by @alex_dev.",
+              banned: true,
+              bannedBy: "alex_dev",
+              reason: "Chat rule violation",
+            }),
+            { status: 403, headers: { "Content-Type": "application/json" } },
+          );
+        }
         return new Response(
           JSON.stringify({
-            error: "USER_BANNED",
-            message: "You have been banned by @alex_dev.",
-            banned: true,
-            bannedBy: "alex_dev",
-            reason: "Chat rule violation",
+            user: {
+              id: "usr_alex",
+              username: "alex_dev",
+              displayName: "Alex Dev",
+              avatarUrl: null,
+              bio: "Streaming dev",
+              isLive: true,
+              channelTitle: "Fullstack Live",
+              channelCategory: "Programming",
+            },
           }),
-          { status: 403, headers: { "Content-Type": "application/json" } },
+          { status: 200, headers: { "Content-Type": "application/json" } },
         );
       }
 
@@ -212,36 +234,64 @@ describe("Index searchbar, user search (online & offline), and health removal", 
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const user = userEvent.setup();
-    render(<App />);
+    try {
+      const user = userEvent.setup();
+      render(<App />);
 
-    // Wait for user hydration
-    await waitFor(() => {
-      expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/v1/auth/me"))).toBe(true);
-    });
+      // Wait for user hydration
+      await waitFor(() => {
+        expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/v1/auth/me"))).toBe(true);
+      });
 
-    // Search for alex - since alex_dev is in bannedFromSlugs, alex_dev must NOT be shown
-    const searchInput = screen.getByRole("searchbox", {
-      name: /search users, streams, or categories/i,
-    });
-    await user.type(searchInput, "alex");
+      // Search for alex - since alex_dev is in bannedFromSlugs, alex_dev must NOT be shown
+      const searchInput = screen.getByRole("searchbox", {
+        name: /search users, streams, or categories/i,
+      });
+      await user.type(searchInput, "alex");
 
-    // Neither the dropdown nor matching users shows alex_dev
-    await waitFor(() => {
-      expect(screen.queryByText("@alex_dev")).not.toBeInTheDocument();
-    });
+      // Neither the dropdown nor matching users shows alex_dev
+      await waitFor(() => {
+        expect(screen.queryByText("@alex_dev")).not.toBeInTheDocument();
+      });
 
-    // Directly navigating to alex_dev channel page
-    window.history.pushState(null, "", "/?page=watch&channel=alex_dev");
-    act(() => {
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    });
+      // Directly navigating to alex_dev channel page
+      window.history.pushState(null, "", "/?page=watch&channel=alex_dev");
+      act(() => {
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      });
 
-    // Expect the banned view: "Channel unavailable", "@alex_dev has banned you", and reason if present
-    expect(await screen.findByRole("heading", { name: /channel unavailable/i })).toBeInTheDocument();
-    expect(screen.getByText(/@alex_dev has banned you from viewing their channel\./i)).toBeInTheDocument();
-    expect(await screen.findByText(/chat rule violation/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/live stream chat/i)).not.toBeInTheDocument();
+      // Expect the banned view: "Channel unavailable", "@alex_dev has banned you", and reason if present
+      expect(await screen.findByRole("heading", { name: /channel unavailable/i })).toBeInTheDocument();
+      expect(screen.getByText(/@alex_dev has banned you from viewing their channel\./i)).toBeInTheDocument();
+      expect(await screen.findByText(/chat rule violation/i)).toBeInTheDocument();
+      expect(screen.queryByLabelText(/live stream chat/i)).not.toBeInTheDocument();
+
+      // Now simulate real-time unban via WebSocket without page refresh
+      isAlexBanned = false;
+      const liveWs = MockLiveWebSocket.instances.find((ws) => ws.url.includes("/ws/live"));
+      expect(liveWs).toBeDefined();
+
+      await act(async () => {
+        liveWs!.emitMessage({
+          type: "moderation.unbanned",
+          payload: {
+            channelId: "chn_alex",
+            channelSlug: "alex_dev",
+            userId: "usr_banned_1",
+            username: "banned_viewer",
+          },
+        });
+      });
+
+      // The banned view should immediately vanish and channel view should render in real time
+      await waitFor(() => {
+        expect(screen.queryByRole("heading", { name: /channel unavailable/i })).not.toBeInTheDocument();
+      });
+      expect(await screen.findByText("Fullstack Live")).toBeInTheDocument();
+      expect(await screen.findByText(/your ban is vanished/i)).toBeInTheDocument();
+    } finally {
+      globalThis.WebSocket = originalWebSocket;
+    }
   });
 
   it("renders empty state on both sidebar and homepage when live channels API returns empty array", async () => {

@@ -23,8 +23,14 @@ model User {
   refreshTokens RefreshToken[]
   follows       ChannelFollow[]
   messages      ChatMessage[]
-  bansReceived  ChannelBan[]    @relation("BannedUser")
-  bansIssued    ChannelBan[]    @relation("BanModerator")
+  bansReceived         ChannelBan[]       @relation("BannedUser")
+  bansIssued           ChannelBan[]       @relation("BanModerator")
+  moderatedChannels    ChannelModerator[] @relation("ChannelModerators")
+  moderatorAssignments ChannelModerator[] @relation("ModeratorAssigner")
+  mutesReceived        ChannelMute[]      @relation("ChannelMutes")
+  mutesIssued          ChannelMute[]      @relation("MuteModerators")
+  warningsReceived     ChannelWarning[]   @relation("ChannelWarnings")
+  warningsIssued       ChannelWarning[]   @relation("WarningModerators")
 
   @@map("users")
 }
@@ -37,20 +43,23 @@ enum UserRole {
 }
 
 model Channel {
-  id           String          @id @default(cuid())
-  ownerId      String          @unique @map("owner_id")
-  slug         String          @unique
+  id           String             @id @default(cuid())
+  ownerId      String             @unique @map("owner_id")
+  slug         String             @unique
   title        String
-  category     String          @default("Programming")
-  streamKey    String          @unique @map("stream_key")
-  slowMode     Boolean         @default(false) @map("slow_mode")
-  isLive       Boolean         @default(false) @map("is_live")
-  createdAt    DateTime        @default(now()) @map("created_at")
-  updatedAt    DateTime        @updatedAt @map("updated_at")
-  owner        User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  category     String             @default("Programming")
+  streamKey    String             @unique @map("stream_key")
+  slowMode     Boolean            @default(false) @map("slow_mode")
+  isLive       Boolean            @default(false) @map("is_live")
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+  owner        User               @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   sessions     StreamSession[]
   chatMessages ChatMessage[]
   bans         ChannelBan[]
+  moderators   ChannelModerator[]
+  mutes        ChannelMute[]
+  warnings     ChannelWarning[]
 
   @@index([isLive])
   @@map("channels")
@@ -96,13 +105,18 @@ model StreamSession {
 }
 
 model ChatMessage {
-  id        String   @id @default(cuid())
-  channelId String   @map("channel_id")
-  userId    String   @map("user_id")
-  content   String
-  createdAt DateTime @default(now()) @map("created_at")
-  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id          String    @id @default(cuid())
+  channelId   String    @map("channel_id")
+  userId      String    @map("user_id")
+  content     String
+  messageType String    @default("text") @map("message_type")
+  gifUrl      String?   @map("gif_url")
+  isDeleted   Boolean   @default(false) @map("is_deleted")
+  deletedBy   String?   @map("deleted_by")
+  deletedAt   DateTime? @map("deleted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  channel     Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([channelId, createdAt])
   @@map("chat_messages")
@@ -123,4 +137,55 @@ model ChannelBan {
   @@unique([channelId, userId])
   @@index([channelId, expiresAt])
   @@map("channel_bans")
+}
+
+model ChannelModerator {
+  id         String   @id @default(cuid())
+  channelId  String   @map("channel_id")
+  userId     String   @map("user_id")
+  assignedBy String   @map("assigned_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  channel    Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user       User     @relation("ChannelModerators", fields: [userId], references: [id], onDelete: Cascade)
+  assigner   User     @relation("ModeratorAssigner", fields: [assignedBy], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([channelId])
+  @@index([userId])
+  @@map("channel_moderators")
+}
+
+model ChannelMute {
+  id        String    @id @default(cuid())
+  channelId String    @map("channel_id")
+  userId    String    @map("user_id")
+  issuedBy  String    @map("issued_by")
+  reason    String    @default("")
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  channel   Channel   @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User      @relation("ChannelMutes", fields: [userId], references: [id], onDelete: Cascade)
+  moderator User      @relation("MuteModerators", fields: [issuedBy], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([channelId, expiresAt])
+  @@map("channel_mutes")
+}
+
+model ChannelWarning {
+  id        String   @id @default(cuid())
+  channelId String   @map("channel_id")
+  userId    String   @map("user_id")
+  issuedBy  String   @map("issued_by")
+  reason    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User     @relation("ChannelWarnings", fields: [userId], references: [id], onDelete: Cascade)
+  moderator User     @relation("WarningModerators", fields: [issuedBy], references: [id], onDelete: Cascade)
+
+  @@index([channelId, userId])
+  @@map("channel_warnings")
 }

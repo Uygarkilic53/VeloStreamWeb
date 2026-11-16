@@ -1,10 +1,10 @@
 import type { HTMLAttributes } from "react";
 
 export interface LoadingSpinnerProps extends HTMLAttributes<HTMLDivElement> {
-  label?: string;
-  className?: string;
-  lineClassName?: string;
-  fullWidth?: boolean;
+  label?: string | undefined;
+  className?: string | undefined;
+  lineClassName?: string | undefined;
+  fullWidth?: boolean | undefined;
 }
 
 export function LoadingSpinner({
@@ -24,9 +24,8 @@ export function LoadingSpinner({
     >
       <div
         data-testid="loading-flat-line-track"
-        className={`relative h-1 w-full overflow-hidden rounded-full bg-[var(--vs-surface-subtle)] border border-[var(--vs-border)]/40 ${
-          fullWidth ? "" : "max-w-md"
-        } ${lineClassName}`}
+        className={`relative h-1 w-full overflow-hidden rounded-full bg-[var(--vs-surface-subtle)] border border-[var(--vs-border)]/40 ${fullWidth ? "" : "max-w-md"
+          } ${lineClassName}`}
       >
         <div data-testid="loading-flat-line-runner" className="animate-flat-line" />
       </div>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "react-toastify";
 import { CookieConsentGate } from "../components/CookieConsentGate";
 import { LoadingSpinner } from "../components/LoadingSpinner";
 import { Navbar, type AppRoute } from "../components/Navbar";
@@ -30,16 +31,21 @@ const CATEGORY_SET = new Set<string>([
   "Creative",
 ]);
 
-function parseRouteFromLocation(): AppRoute {
+// eslint-disable-next-line react-refresh/only-export-components
+export function parseRouteFromLocation(): AppRoute {
   if (typeof window === "undefined") {
     return { page: "home" };
   }
   const url = new URL(window.location.href);
   const pageParam = url.searchParams.get("page");
   const channelParam = url.searchParams.get("channel");
+  const watchParam = url.searchParams.get("watch");
 
-  if (pageParam === "watch" && channelParam) {
+  if ((pageParam === "watch" || !pageParam) && channelParam) {
     return { page: "watch", slug: channelParam };
+  }
+  if (watchParam) {
+    return { page: "watch", slug: watchParam };
   }
   if (pageParam === "following") return { page: "following" };
   if (pageParam === "signin") return { page: "signin" };
@@ -55,6 +61,14 @@ function parseRouteFromLocation(): AppRoute {
   if (path === "/studio") return { page: "studio" };
   if (path.startsWith("/watch/")) {
     const slug = decodeURIComponent(path.slice("/watch/".length));
+    if (slug) return { page: "watch", slug };
+  }
+  if (path.startsWith("/@")) {
+    const slug = decodeURIComponent(path.slice(2));
+    if (slug) return { page: "watch", slug };
+  }
+  if (path.length > 1 && !path.slice(1).includes("/") && !path.slice(1).includes(".")) {
+    const slug = decodeURIComponent(path.slice(1));
     if (slug) return { page: "watch", slug };
   }
   return { page: "home" };
@@ -88,7 +102,9 @@ function deriveInitials(name: string): string {
 
 export function AppShell() {
   const env = useMemo(() => getFrontendEnv(), []);
-  const { user, markChannelBanned } = useAuth();
+  const { user, markChannelBanned, clearChannelBanned } = useAuth();
+  const userRef = useRef(user);
+  userRef.current = user;
   const { theme, openCookieSettings } = useTheme();
 
   const [route, setRoute] = useState<AppRoute>(() => parseRouteFromLocation());
@@ -246,13 +262,62 @@ export function AppShell() {
             } else if (frame.type === "moderation.banned" && frame.payload) {
               const channelSlug = String(
                 frame.payload.channelSlug || frame.payload.channelId || "",
-              ).toLowerCase();
-              if (channelSlug) {
+              )
+                .trim()
+                .replace(/^@/, "")
+                .toLowerCase();
+              const targetUserId = frame.payload.userId?.trim();
+              const targetUsername = frame.payload.username?.trim().replace(/^@/, "").toLowerCase();
+              const currentUser = userRef.current;
+              const currentUserId = currentUser?.id?.trim();
+              const currentUsername = currentUser?.username?.trim().replace(/^@/, "").toLowerCase();
+              const isForCurrentUser =
+                !targetUserId && !targetUsername
+                  ? true
+                  : Boolean(
+                      (currentUserId && targetUserId && targetUserId === currentUserId) ||
+                      (currentUsername && targetUsername && targetUsername === currentUsername),
+                    );
+              if (channelSlug && isForCurrentUser) {
                 markChannelBanned(channelSlug);
                 setBannedChannels((prev) => ({
                   ...prev,
                   [channelSlug]: { isBanned: true, reason: frame.payload.reason ?? null },
                 }));
+              }
+            } else if (frame.type === "moderation.unbanned" && frame.payload) {
+              const payload = frame.payload as {
+                channelId?: string;
+                channelSlug?: string;
+                userId?: string;
+                username?: string;
+              };
+              const channelSlug = String(
+                payload.channelSlug || payload.channelId || "",
+              )
+                .trim()
+                .replace(/^@/, "")
+                .toLowerCase();
+              const targetUserId = payload.userId?.trim();
+              const targetUsername = payload.username?.trim().replace(/^@/, "").toLowerCase();
+              const currentUser = userRef.current;
+              const currentUserId = currentUser?.id?.trim();
+              const currentUsername = currentUser?.username?.trim().replace(/^@/, "").toLowerCase();
+              const isForCurrentUser =
+                !targetUserId && !targetUsername
+                  ? true
+                  : Boolean(
+                      (currentUserId && targetUserId && targetUserId === currentUserId) ||
+                      (currentUsername && targetUsername && targetUsername === currentUsername),
+                    );
+              if (channelSlug && isForCurrentUser) {
+                clearChannelBanned?.(channelSlug);
+                setBannedChannels((prev) => {
+                  const next = { ...prev };
+                  delete next[channelSlug];
+                  return next;
+                });
+                toast.success("Your ban is vanished");
               }
             }
           } catch {
@@ -281,7 +346,7 @@ export function AppShell() {
       window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [applySnapshot, env.realtimeWsUrl, markChannelBanned, user?.accessToken]);
+  }, [applySnapshot, clearChannelBanned, env.realtimeWsUrl, markChannelBanned, user?.accessToken]);
 
   useEffect(() => {
     function handlePopState() {
@@ -352,9 +417,13 @@ export function AppShell() {
   }, [broadcastMeta, isBroadcastLive, isOfflineFallback, rawLiveStreams, user]);
 
   const visibleStreams = useMemo(() => {
-    const banned = new Set((user?.bannedFromSlugs ?? []).map((s) => s.toLowerCase()));
+    const banned = new Set(
+      (user?.bannedFromSlugs ?? []).map((s) => s.trim().replace(/^@/, "").toLowerCase()),
+    );
     if (banned.size === 0) return streams;
-    return streams.filter((s) => !banned.has(s.slug.toLowerCase()));
+    return streams.filter(
+      (s) => !banned.has(s.slug.trim().replace(/^@/, "").toLowerCase()),
+    );
   }, [streams, user?.bannedFromSlugs]);
 
   const searchResults = useDirectorySearch(searchQuery, streams, user);
@@ -434,8 +503,12 @@ export function AppShell() {
 
   const isWatchChannelBanned =
     route.page === "watch" &&
-    (Boolean(user?.bannedFromSlugs?.includes(route.slug.toLowerCase())) ||
-      bannedChannels[route.slug.toLowerCase()]?.isBanned === true);
+    (Boolean(
+      user?.bannedFromSlugs?.some(
+        (s) => s.trim().replace(/^@/, "").toLowerCase() === route.slug.trim().replace(/^@/, "").toLowerCase(),
+      ),
+    ) ||
+      bannedChannels[route.slug.trim().replace(/^@/, "").toLowerCase()]?.isBanned === true);
 
   const activeWatchChannel =
     route.page === "watch"

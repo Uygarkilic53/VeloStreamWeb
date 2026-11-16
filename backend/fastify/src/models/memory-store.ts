@@ -1,25 +1,34 @@
 import { randomUUID } from "node:crypto";
+import { parseDurationToExpiry } from "./channel.model.js";
 import {
   RecordNotFoundError,
   UniqueConstraintError,
   type AccountProfileView,
+  type AddModeratorInput,
   type ChannelBanView,
+  type ChannelModeratorView,
   type ChannelModelContract,
+  type ChannelMuteView,
   type ChannelRecord,
   type ChannelView,
+  type ChannelWarningView,
   type CoreModels,
   type CreateRefreshTokenInput,
   type CreateUserWithChannelInput,
+  type MuteUserInput,
   type PublicUserSummary,
   type RefreshTokenModelContract,
   type RefreshTokenRecord,
+  type RemoveModeratorInput,
   type SearchUsersResult,
+  type UnmuteUserInput,
   type UpdateChannelSettingsInput,
   type UpdateUserProfileInput,
   type UpsertChannelBanInput,
   type UpsertChannelBanResult,
   type UserModelContract,
   type UserRecord,
+  type WarnUserInput,
 } from "./types.js";
 import { sortPublicUserMatches } from "./user.model.js";
 
@@ -32,11 +41,41 @@ interface StoredBan {
   expiresAt: Date | null;
 }
 
+interface StoredModerator {
+  id: string;
+  channelId: string;
+  userId: string;
+  assignedBy: string;
+  createdAt: Date;
+}
+
+interface StoredMute {
+  id: string;
+  channelId: string;
+  userId: string;
+  issuedBy: string;
+  reason: string;
+  expiresAt: Date | null;
+  createdAt: Date;
+}
+
+interface StoredWarning {
+  id: string;
+  channelId: string;
+  userId: string;
+  issuedBy: string;
+  reason: string;
+  createdAt: Date;
+}
+
 class MemoryState {
   users = new Map<string, UserRecord>();
   channels = new Map<string, ChannelRecord>();
   refreshTokens = new Map<string, RefreshTokenRecord>();
   bans = new Map<string, StoredBan>();
+  moderators = new Map<string, StoredModerator>();
+  mutes = new Map<string, StoredMute>();
+  warnings = new Map<string, StoredWarning>();
   follows = new Map<string, string[]>();
 
   findChannelByOwner(ownerId: string): ChannelRecord | undefined {
@@ -455,9 +494,12 @@ class MemoryChannelModel implements ChannelModelContract {
   }
 
   async banUserByUsername(input: UpsertChannelBanInput): Promise<UpsertChannelBanResult> {
-    const channel = this.state.findChannelByOwner(input.ownerId);
-    if (!channel) {
-      throw new RecordNotFoundError("Channel", "Channel not found for this account.");
+    const channel = this.resolveChannel(input.channelSlugOrOwnerId, input.ownerId);
+    const isOwner = channel.ownerId === input.ownerId;
+    const isMod = isOwner ? false : await this.isUserModerator(channel.id, input.ownerId);
+
+    if (!isOwner && !isMod) {
+      throw new Error("You do not have permission to ban users in this channel.");
     }
 
     const cleanHandle = input.targetUsername.trim().replace(/^@/, "");
@@ -470,6 +512,19 @@ class MemoryChannelModel implements ChannelModelContract {
     }
     if (!targetUser) {
       throw new RecordNotFoundError("User", `No account found for @${cleanHandle}.`);
+    }
+
+    if (targetUser.id === input.ownerId) {
+      throw new Error("You cannot ban your own channel account.");
+    }
+
+    if (!isOwner) {
+      if (targetUser.id === channel.ownerId) {
+        throw new Error("Moderators cannot ban the channel creator.");
+      }
+      if (await this.isUserModerator(channel.id, targetUser.id)) {
+        throw new Error("Moderators cannot ban peer moderators.");
+      }
     }
 
     const key = `${channel.id}:${targetUser.id}`;
@@ -508,19 +563,35 @@ class MemoryChannelModel implements ChannelModelContract {
     };
   }
 
-  async unbanUserByUsername(ownerId: string, targetUsername: string): Promise<boolean> {
-    const channel = this.state.findChannelByOwner(ownerId);
-    if (!channel) {
-      throw new RecordNotFoundError("Channel", "Channel not found for this account.");
+  async unbanUserByUsername(ownerId: string, targetUsername: string, channelSlugOrOwnerId?: string): Promise<boolean> {
+    const channel = this.resolveChannel(channelSlugOrOwnerId, ownerId);
+    const isOwner = channel.ownerId === ownerId;
+    const isMod = isOwner ? false : await this.isUserModerator(channel.id, ownerId);
+
+    if (!isOwner && !isMod) {
+      throw new Error("You do not have permission to unban users in this channel.");
     }
 
     const cleanHandle = targetUsername.trim().replace(/^@/, "");
+    let targetUser: UserRecord | undefined;
     for (const candidate of this.state.users.values()) {
       if (candidate.username.toLowerCase() === cleanHandle.toLowerCase()) {
-        return this.state.bans.delete(`${channel.id}:${candidate.id}`);
+        targetUser = candidate;
+        break;
       }
     }
-    return false;
+    if (!targetUser) return false;
+
+    if (!isOwner) {
+      if (targetUser.id === channel.ownerId) {
+        throw new Error("Moderators cannot modify status of channel creator.");
+      }
+      if (await this.isUserModerator(channel.id, targetUser.id)) {
+        throw new Error("Moderators cannot unban peer moderators.");
+      }
+    }
+
+    return this.state.bans.delete(`${channel.id}:${targetUser.id}`);
   }
 
   async setFollowState(userId: string, channelSlug: string, follow: boolean): Promise<string[]> {
@@ -611,6 +682,293 @@ class MemoryChannelModel implements ChannelModelContract {
       streamKey: updated.streamKey,
       slowMode: updated.slowMode,
       isLive: updated.isLive,
+    };
+  }
+
+  async clearChatMessages(_channelId: string): Promise<void> {
+    // In-memory store does not track persistent chat messages
+  }
+
+  private resolveChannel(slugOrOwnerId?: string, fallbackOwnerId?: string): ChannelRecord {
+    const query = slugOrOwnerId?.trim().replace(/^@/, "");
+    if (!query && !fallbackOwnerId) {
+      throw new RecordNotFoundError("Channel", "Channel identifier is required.");
+    }
+    if (query) {
+      const lower = query.toLowerCase();
+      for (const channel of this.state.channels.values()) {
+        if (channel.id === query || channel.ownerId === query || channel.slug.toLowerCase() === lower) {
+          return channel;
+        }
+        const owner = this.state.users.get(channel.ownerId);
+        if (owner && owner.username.toLowerCase() === lower) {
+          return channel;
+        }
+      }
+    }
+    if (fallbackOwnerId) {
+      const channel = this.state.findChannelByOwner(fallbackOwnerId);
+      if (channel) return channel;
+    }
+    throw new RecordNotFoundError("Channel", "Channel not found.");
+  }
+
+  async addModerator(input: AddModeratorInput): Promise<ChannelModeratorView> {
+    const channel = this.resolveChannel(input.channelSlug, input.ownerId);
+    if (!channel) {
+      throw new RecordNotFoundError("Channel", "Channel not found for this account.");
+    }
+    if (channel.ownerId !== input.ownerId) {
+      throw new Error("You do not have permission to manage moderators for this channel.");
+    }
+    const cleanHandle = input.targetUsername.trim().replace(/^@/, "").toLowerCase();
+    let targetUser: UserRecord | undefined;
+    for (const u of this.state.users.values()) {
+      if (u.username.toLowerCase() === cleanHandle) {
+        targetUser = u;
+        break;
+      }
+    }
+    if (!targetUser) {
+      throw new RecordNotFoundError("User", `No account found for @${cleanHandle}.`);
+    }
+    if (targetUser.id === channel.ownerId) {
+      throw new Error("Channel owner cannot be added as a moderator.");
+    }
+
+    const key = `${channel.id}:${targetUser.id}`;
+    const existing = this.state.moderators.get(key);
+    const mod: StoredModerator = {
+      id: existing?.id ?? `cmod_${randomUUID()}`,
+      channelId: channel.id,
+      userId: targetUser.id,
+      assignedBy: input.ownerId,
+      createdAt: existing?.createdAt ?? new Date(),
+    };
+    this.state.moderators.set(key, mod);
+
+    return {
+      id: mod.id,
+      userId: targetUser.id,
+      username: targetUser.username,
+      displayName: targetUser.displayName,
+      avatarUrl: targetUser.avatarUrl,
+      assignedAt: mod.createdAt.toISOString(),
+    };
+  }
+
+  async removeModerator(input: RemoveModeratorInput): Promise<boolean> {
+    const channel = this.resolveChannel(input.channelSlug, input.ownerId);
+    if (!channel) {
+      throw new RecordNotFoundError("Channel", "Channel not found for this account.");
+    }
+    if (channel.ownerId !== input.ownerId) {
+      throw new Error("You do not have permission to manage moderators for this channel.");
+    }
+    const cleanHandle = input.targetUsername.trim().replace(/^@/, "").toLowerCase();
+    let targetUser: UserRecord | undefined;
+    for (const u of this.state.users.values()) {
+      if (u.username.toLowerCase() === cleanHandle) {
+        targetUser = u;
+        break;
+      }
+    }
+    if (!targetUser) return false;
+    const key = `${channel.id}:${targetUser.id}`;
+    return this.state.moderators.delete(key);
+  }
+
+  async listModerators(channelSlugOrOwnerId: string): Promise<ChannelModeratorView[]> {
+    const channel = this.resolveChannel(channelSlugOrOwnerId);
+    const list: ChannelModeratorView[] = [];
+    for (const mod of this.state.moderators.values()) {
+      if (mod.channelId === channel.id) {
+        const u = this.state.users.get(mod.userId);
+        if (u) {
+          list.push({
+            id: mod.id,
+            userId: u.id,
+            username: u.username,
+            displayName: u.displayName,
+            avatarUrl: u.avatarUrl,
+            assignedAt: mod.createdAt.toISOString(),
+          });
+        }
+      }
+    }
+    return list.sort((a, b) => b.assignedAt.localeCompare(a.assignedAt));
+  }
+
+  async isUserModerator(channelId: string, userId: string): Promise<boolean> {
+    return this.state.moderators.has(`${channelId}:${userId}`);
+  }
+
+  async muteUser(input: MuteUserInput): Promise<ChannelMuteView> {
+    const channel = this.resolveChannel(input.channelSlugOrOwnerId, input.actorUserId);
+    const isOwner = channel.ownerId === input.actorUserId;
+    const isMod = isOwner ? false : await this.isUserModerator(channel.id, input.actorUserId);
+    if (!isOwner && !isMod) {
+      throw new Error("You do not have permission to silence users in this channel.");
+    }
+    const cleanHandle = input.targetUsername.trim().replace(/^@/, "").toLowerCase();
+    let targetUser: UserRecord | undefined;
+    for (const u of this.state.users.values()) {
+      if (u.username.toLowerCase() === cleanHandle) {
+        targetUser = u;
+        break;
+      }
+    }
+    if (!targetUser) {
+      throw new RecordNotFoundError("User", `No account found for @${cleanHandle}.`);
+    }
+    if (targetUser.id === input.actorUserId) {
+      throw new Error("You cannot silence yourself.");
+    }
+    if (!isOwner) {
+      if (targetUser.id === channel.ownerId) {
+        throw new Error("Moderators cannot silence the channel creator.");
+      }
+      if (await this.isUserModerator(channel.id, targetUser.id)) {
+        throw new Error("Moderators cannot silence peer moderators.");
+      }
+    }
+    const expiresAt = parseDurationToExpiry(input.duration);
+    const key = `${channel.id}:${targetUser.id}`;
+    const existing = this.state.mutes.get(key);
+    const mute: StoredMute = {
+      id: existing?.id ?? `mute_${randomUUID()}`,
+      channelId: channel.id,
+      userId: targetUser.id,
+      issuedBy: input.actorUserId,
+      reason: input.reason ?? "",
+      expiresAt,
+      createdAt: existing?.createdAt ?? new Date(),
+    };
+    this.state.mutes.set(key, mute);
+    return {
+      id: mute.id,
+      userId: targetUser.id,
+      username: targetUser.username,
+      displayName: targetUser.displayName,
+      avatarUrl: targetUser.avatarUrl,
+      reason: mute.reason,
+      expiresAt: mute.expiresAt ? mute.expiresAt.toISOString() : null,
+      mutedAt: mute.createdAt.toISOString(),
+    };
+  }
+
+  async unmuteUser(input: UnmuteUserInput): Promise<boolean> {
+    const channel = this.resolveChannel(input.channelSlugOrOwnerId, input.actorUserId);
+    const isOwner = channel.ownerId === input.actorUserId;
+    const isMod = isOwner ? false : await this.isUserModerator(channel.id, input.actorUserId);
+    if (!isOwner && !isMod) {
+      throw new Error("You do not have permission to unsilence users in this channel.");
+    }
+    const cleanHandle = input.targetUsername.trim().replace(/^@/, "").toLowerCase();
+    let targetUser: UserRecord | undefined;
+    for (const u of this.state.users.values()) {
+      if (u.username.toLowerCase() === cleanHandle) {
+        targetUser = u;
+        break;
+      }
+    }
+    if (!targetUser) return false;
+    if (!isOwner) {
+      if (targetUser.id === channel.ownerId) {
+        throw new Error("Moderators cannot modify status of channel creator.");
+      }
+      if (await this.isUserModerator(channel.id, targetUser.id)) {
+        throw new Error("Moderators cannot unsilence peer moderators.");
+      }
+    }
+    const key = `${channel.id}:${targetUser.id}`;
+    return this.state.mutes.delete(key);
+  }
+
+  async listMutes(channelSlugOrOwnerId: string): Promise<ChannelMuteView[]> {
+    const channel = this.resolveChannel(channelSlugOrOwnerId);
+    const list: ChannelMuteView[] = [];
+    const now = Date.now();
+    for (const mute of this.state.mutes.values()) {
+      if (mute.channelId === channel.id) {
+        if (mute.expiresAt && mute.expiresAt.getTime() <= now) continue;
+        const u = this.state.users.get(mute.userId);
+        if (u) {
+          list.push({
+            id: mute.id,
+            userId: u.id,
+            username: u.username,
+            displayName: u.displayName,
+            avatarUrl: u.avatarUrl,
+            reason: mute.reason,
+            expiresAt: mute.expiresAt ? mute.expiresAt.toISOString() : null,
+            mutedAt: mute.createdAt.toISOString(),
+          });
+        }
+      }
+    }
+    return list.sort((a, b) => b.mutedAt.localeCompare(a.mutedAt));
+  }
+
+  async getUserMute(channelId: string, userId: string): Promise<{ isMuted: boolean; expiresAt: string | null; reason: string }> {
+    const mute = this.state.mutes.get(`${channelId}:${userId}`);
+    if (mute && (!mute.expiresAt || mute.expiresAt.getTime() > Date.now())) {
+      return {
+        isMuted: true,
+        expiresAt: mute.expiresAt ? mute.expiresAt.toISOString() : null,
+        reason: mute.reason,
+      };
+    }
+    return { isMuted: false, expiresAt: null, reason: "" };
+  }
+
+  async warnUser(input: WarnUserInput): Promise<ChannelWarningView> {
+    const channel = this.resolveChannel(input.channelSlugOrOwnerId, input.actorUserId);
+    const isOwner = channel.ownerId === input.actorUserId;
+    const isMod = isOwner ? false : await this.isUserModerator(channel.id, input.actorUserId);
+    if (!isOwner && !isMod) {
+      throw new Error("You do not have permission to warn users in this channel.");
+    }
+    const cleanHandle = input.targetUsername.trim().replace(/^@/, "").toLowerCase();
+    let targetUser: UserRecord | undefined;
+    for (const u of this.state.users.values()) {
+      if (u.username.toLowerCase() === cleanHandle) {
+        targetUser = u;
+        break;
+      }
+    }
+    if (!targetUser) {
+      throw new RecordNotFoundError("User", `No account found for @${cleanHandle}.`);
+    }
+    if (targetUser.id === input.actorUserId) {
+      throw new Error("You cannot send a warning to yourself.");
+    }
+    if (!isOwner) {
+      if (targetUser.id === channel.ownerId) {
+        throw new Error("Moderators cannot warn the channel creator.");
+      }
+      if (await this.isUserModerator(channel.id, targetUser.id)) {
+        throw new Error("Moderators cannot warn peer moderators.");
+      }
+    }
+    const actor = this.state.users.get(input.actorUserId);
+    const warning: StoredWarning = {
+      id: `warn_${randomUUID()}`,
+      channelId: channel.id,
+      userId: targetUser.id,
+      issuedBy: input.actorUserId,
+      reason: input.reason,
+      createdAt: new Date(),
+    };
+    this.state.warnings.set(warning.id, warning);
+    return {
+      id: warning.id,
+      channelId: channel.id,
+      userId: targetUser.id,
+      username: targetUser.username,
+      moderatorUsername: actor?.username ?? "moderator",
+      reason: warning.reason,
+      createdAt: warning.createdAt.toISOString(),
     };
   }
 }

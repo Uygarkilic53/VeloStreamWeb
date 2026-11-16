@@ -18,6 +18,7 @@ type Env struct {
 	JWTAudience        string
 	JWTPublicKeyPEM    string
 	MediaWebhookSecret string
+	GiphyAPIKey        string
 }
 
 // ParseDotEnv parses `.env` text into a key/value map without mutating process state.
@@ -110,6 +111,7 @@ func ParseEnv(lookup func(string) (string, bool)) (Env, error) {
 		JWTIssuer:          getOrDefault("JWT_ISSUER", "velostream-fastify"),
 		JWTAudience:        getOrDefault("JWT_AUDIENCE", "velostream-clients"),
 		MediaWebhookSecret: get("MEDIA_WEBHOOK_SECRET"),
+		GiphyAPIKey:        getOrDefault("GIPHY_DEVELOPERS_API", getOrDefault("GIPHY_API_KEY", "igSzLjA7q9mSr0QNgANOc6w6AqGOdqxt")),
 	}
 
 	portStr := get("FIBER_PORT")

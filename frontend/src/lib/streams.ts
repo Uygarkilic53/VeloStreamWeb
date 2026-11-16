@@ -36,16 +36,22 @@ export interface StreamDirectoryItem extends ChannelSummary {
   scene: ThumbnailScene;
   avatarInitials: string;
   avatarAccent: string;
-  avatarUrl?: string | null;
-  featured?: boolean;
+  avatarUrl?: string | null | undefined;
+  featured?: boolean | undefined;
 }
 
 export interface ChatFeedItem {
   id: string;
   author: string;
-  role?: "Creator" | "Mod";
+  userId?: string | undefined;
+  avatarUrl?: string | null | undefined;
+  role?: "Creator" | "Moderator" | "User" | "Mod" | undefined;
   colorClass: string;
   content: string;
+  messageType?: "text" | "gif" | undefined;
+  gifUrl?: string | null | undefined;
+  isDeleted?: boolean | undefined;
+  deletedBy?: string | undefined;
   timestamp: string;
 }
 

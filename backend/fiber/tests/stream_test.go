@@ -456,6 +456,12 @@ func TestMediaMTXEvent_StreamLifecycleAndBroadcasting(t *testing.T) {
 		t.Fatal("timed out waiting for __live__ room broadcast")
 	}
 
+	// Freeze room during live stream to verify reset on offline
+	hub.SetRoomFrozen("creator_alice", true)
+	if !hub.IsRoomFrozen("creator_alice") {
+		t.Fatalf("expected room to be frozen")
+	}
+
 	// 2. stream.not_ready event
 	notReadyBody := []byte(`{"event":"stream.not_ready","path":"creator_alice","sourceType":"whip"}`)
 	notReadyReq := httptest.NewRequest(http.MethodPost, "/webhooks/mediamtx/event", bytes.NewReader(notReadyBody))
@@ -489,6 +495,23 @@ func TestMediaMTXEvent_StreamLifecycleAndBroadcasting(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for channel room offline broadcast")
+	}
+
+	// Verify broadcast chat.reset frame on stream ending
+	select {
+	case msg := <-chClient.Send:
+		var frame models.WsFrame
+		_ = json.Unmarshal(msg, &frame)
+		if frame.Type != models.FrameTypeChatReset {
+			t.Fatalf("expected chat.reset frame, got %s", frame.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for channel room chat.reset broadcast")
+	}
+
+	// Verify room freeze state is reset to false on stream end
+	if hub.IsRoomFrozen("creator_alice") {
+		t.Fatalf("expected room freeze to be reset to false after stream.not_ready")
 	}
 
 	select {

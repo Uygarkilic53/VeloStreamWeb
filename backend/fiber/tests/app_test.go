@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/velostream/fiber/app"
 	"github.com/velostream/fiber/controllers"
 	"github.com/velostream/fiber/models"
@@ -161,7 +162,7 @@ func TestWebSocketRouteUpgradeAndAuth(t *testing.T) {
 	}
 
 	// WebSocket upgrade with invalid JWT returns 401 Unauthorized.
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
@@ -176,6 +177,22 @@ func TestWebSocketRouteUpgradeAndAuth(t *testing.T) {
 	}
 
 	authedApp := app.New(app.Options{Hub: h, JwtService: jwtSvc})
+
+	// Missing token returns 401 Unauthorized
+	missingTokenReq := httptest.NewRequest(http.MethodGet, "/ws/chat/ch_1", nil)
+	missingTokenReq.Header.Set("Connection", "Upgrade")
+	missingTokenReq.Header.Set("Upgrade", "websocket")
+	missingTokenReq.Header.Set("Sec-WebSocket-Version", "13")
+	missingTokenReq.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	respMissing, err := authedApp.Test(missingTokenReq)
+	if err != nil {
+		t.Fatalf("ws missing token test: %v", err)
+	}
+	if respMissing.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for missing token, got %d", respMissing.StatusCode)
+	}
+
+	// Invalid token returns 401 Unauthorized
 	badTokenReq := httptest.NewRequest(http.MethodGet, "/ws/chat/ch_1?token=invalid.jwt.token", nil)
 	badTokenReq.Header.Set("Connection", "Upgrade")
 	badTokenReq.Header.Set("Upgrade", "websocket")
@@ -187,6 +204,81 @@ func TestWebSocketRouteUpgradeAndAuth(t *testing.T) {
 	}
 	if resp401.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 Unauthorized, got %d", resp401.StatusCode)
+	}
+
+	// Valid JWT token returns 101 Switching Protocols
+	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, jwt.MapClaims{
+		"sub":      "usr_test_123",
+		"username": "tester",
+		"role":     "USER",
+		"iss":      "velostream-fastify",
+		"aud":      "velostream-clients",
+		"exp":      time.Now().Add(1 * time.Hour).Unix(),
+	})
+	validTokenStr, err := token.SignedString(priv)
+	if err != nil {
+		t.Fatalf("sign valid token: %v", err)
+	}
+
+	validReq := httptest.NewRequest(http.MethodGet, "/ws/chat/ch_1?token="+validTokenStr, nil)
+	validReq.Header.Set("Connection", "Upgrade")
+	validReq.Header.Set("Upgrade", "websocket")
+	validReq.Header.Set("Sec-WebSocket-Version", "13")
+	validReq.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	resp101, err := authedApp.Test(validReq)
+	if err != nil {
+		t.Fatalf("ws valid token test: %v", err)
+	}
+	if resp101.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101 Switching Protocols, got %d", resp101.StatusCode)
+	}
+
+	// Valid JWT with Bearer prefix in query param returns 101 Switching Protocols
+	bearerReq := httptest.NewRequest(http.MethodGet, "/ws/chat/ch_1?token=Bearer%20"+validTokenStr, nil)
+	bearerReq.Header.Set("Connection", "Upgrade")
+	bearerReq.Header.Set("Upgrade", "websocket")
+	bearerReq.Header.Set("Sec-WebSocket-Version", "13")
+	bearerReq.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	respBearer101, err := authedApp.Test(bearerReq)
+	if err != nil {
+		t.Fatalf("ws bearer token test: %v", err)
+	}
+	if respBearer101.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101 Switching Protocols with Bearer query, got %d", respBearer101.StatusCode)
+	}
+
+	// Valid JWT with Bearer+ prefix in query param returns 101 Switching Protocols
+	bearerPlusReq := httptest.NewRequest(http.MethodGet, "/ws/chat/ch_1?token=Bearer+"+validTokenStr, nil)
+	bearerPlusReq.Header.Set("Connection", "Upgrade")
+	bearerPlusReq.Header.Set("Upgrade", "websocket")
+	bearerPlusReq.Header.Set("Sec-WebSocket-Version", "13")
+	bearerPlusReq.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	respBearerPlus101, err := authedApp.Test(bearerPlusReq)
+	if err != nil {
+		t.Fatalf("ws bearer+ token test: %v", err)
+	}
+	if respBearerPlus101.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101 Switching Protocols with Bearer+ query, got %d", respBearerPlus101.StatusCode)
+	}
+
+	// Channel messages endpoint when chatModel is nil returns 200 with empty messages
+	msgReq := httptest.NewRequest(http.MethodGet, "/api/chat/ch_1/messages", nil)
+	respMsg, err := authedApp.Test(msgReq)
+	if err != nil {
+		t.Fatalf("get messages test: %v", err)
+	}
+	if respMsg.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for /api/chat/ch_1/messages, got %d", respMsg.StatusCode)
+	}
+
+	// Channel messages endpoint with encoded @ in slug (/api/chat/%40ch_1/messages) returns 200 OK
+	encMsgReq := httptest.NewRequest(http.MethodGet, "/api/chat/%40ch_1/messages", nil)
+	respEncMsg, err := authedApp.Test(encMsgReq)
+	if err != nil {
+		t.Fatalf("get encoded messages test: %v", err)
+	}
+	if respEncMsg.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for /api/chat/%%40ch_1/messages, got %d", respEncMsg.StatusCode)
 	}
 }
 

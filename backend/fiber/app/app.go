@@ -18,6 +18,8 @@ type Options struct {
 	JwtService         *services.JwtService
 	MediaWebhookSecret string
 	StreamRepo         models.StreamRepository
+	ChatModel          *models.ChatModel
+	GiphyAPIKey        string
 }
 
 // New builds and configures the Fiber app without calling Listen (mirrors Fastify's src/app.ts).
@@ -58,6 +60,8 @@ func New(opts Options) *fiber.App {
 		JwtService:         opts.JwtService,
 		MediaWebhookSecret: opts.MediaWebhookSecret,
 		StreamRepo:         opts.StreamRepo,
+		ChatModel:          opts.ChatModel,
+		GiphyAPIKey:        opts.GiphyAPIKey,
 	})
 
 	return fiberApp

@@ -15,11 +15,18 @@ import {
   SunIcon,
   TrashIcon,
   UploadIcon,
+  UserCheckIcon,
   UserIcon,
+  VolumeXIcon,
 } from "../components/Icons";
 import type { AppRoute } from "../components/Navbar";
 import { UserAvatar } from "../components/UserAvatar";
-import { useAuth, type StreamCategory } from "../lib/auth";
+import {
+  useAuth,
+  type ChannelModeratorView,
+  type ChannelMuteView,
+  type StreamCategory,
+} from "../lib/auth";
 import {
   RESERVED_USERNAMES,
   STREAM_CATEGORIES,
@@ -47,6 +54,12 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
     changePassword,
     banUser,
     unbanUser,
+    listModerators,
+    addModerator,
+    removeModerator,
+    listSilences,
+    silenceUser,
+    unsilenceUser,
   } = useAuth();
   const { theme, setTheme, cookiesAccepted, openCookieSettings } = useTheme();
   const { whipBaseUrl } = getFrontendEnv();
@@ -71,6 +84,15 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
 
   const [banInput, setBanInput] = useState("");
   const [banReasonInput, setBanReasonInput] = useState("");
+
+  const [moderators, setModerators] = useState<ChannelModeratorView[]>([]);
+  const [silences, setSilences] = useState<ChannelMuteView[]>([]);
+  const [modInput, setModInput] = useState("");
+  const [silenceInput, setSilenceInput] = useState("");
+  const [silenceDurationInput, setSilenceDurationInput] = useState<
+    "1h" | "5h" | "1d" | "1w" | "1m"
+  >("1h");
+  const [silenceReasonInput, setSilenceReasonInput] = useState("");
 
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
@@ -102,6 +124,21 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
     user?.channelTitle,
     user?.channelCategory,
   ]);
+
+  useEffect(() => {
+    if (activeTab === "moderation" && user) {
+      void listModerators().then((res) => {
+        if (res.ok && res.moderators) {
+          setModerators(res.moderators);
+        }
+      });
+      void listSilences().then((res) => {
+        if (res.ok && res.silences) {
+          setSilences(res.silences);
+        }
+      });
+    }
+  }, [activeTab, user, listModerators, listSilences]);
 
   async function copyValue(value: string, field: "key" | "rtmp" | "whip") {
     try {
@@ -308,6 +345,89 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
         return;
       }
       toast.success(result.message ?? `Unbanned @${targetUsername}.`);
+    } finally {
+      setIsModerating(false);
+    }
+  }
+
+  async function handleAddModeratorSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const handle = modInput.trim().replace(/^@/, "");
+    if (!handle) {
+      toast.error("Enter a username to assign as moderator.");
+      return;
+    }
+    setIsModerating(true);
+    try {
+      const result = await addModerator(handle);
+      if (!result.ok) {
+        toast.error(result.error ?? "Unable to assign moderator.");
+        return;
+      }
+      setModInput("");
+      toast.success(result.message ?? `@${handle} assigned as moderator.`);
+      const updated = await listModerators();
+      if (updated.ok && updated.moderators) setModerators(updated.moderators);
+    } finally {
+      setIsModerating(false);
+    }
+  }
+
+  async function handleRemoveModerator(targetUsername: string) {
+    setIsModerating(true);
+    try {
+      const result = await removeModerator(targetUsername);
+      if (!result.ok) {
+        toast.error(result.error ?? "Unable to remove moderator.");
+        return;
+      }
+      toast.success(result.message ?? `Removed @${targetUsername} from moderators.`);
+      const updated = await listModerators();
+      if (updated.ok && updated.moderators) setModerators(updated.moderators);
+    } finally {
+      setIsModerating(false);
+    }
+  }
+
+  async function handleSilenceSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const handle = silenceInput.trim().replace(/^@/, "");
+    if (!handle) {
+      toast.error("Enter a username to silence.");
+      return;
+    }
+    setIsModerating(true);
+    try {
+      const result = await silenceUser(
+        handle,
+        silenceDurationInput,
+        silenceReasonInput || "Silenced from channel settings",
+      );
+      if (!result.ok) {
+        toast.error(result.error ?? "Unable to silence user.");
+        return;
+      }
+      setSilenceInput("");
+      setSilenceReasonInput("");
+      toast.success(result.message ?? `@${handle} silenced for ${silenceDurationInput}.`);
+      const updated = await listSilences();
+      if (updated.ok && updated.silences) setSilences(updated.silences);
+    } finally {
+      setIsModerating(false);
+    }
+  }
+
+  async function handleUnsilence(targetUsername: string) {
+    setIsModerating(true);
+    try {
+      const result = await unsilenceUser(targetUsername);
+      if (!result.ok) {
+        toast.error(result.error ?? "Unable to unsilence user.");
+        return;
+      }
+      toast.success(result.message ?? `Unsilenced @${targetUsername}.`);
+      const updated = await listSilences();
+      if (updated.ok && updated.silences) setSilences(updated.silences);
     } finally {
       setIsModerating(false);
     }
@@ -1001,43 +1121,189 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
 
           {activeTab === "moderation" && (
             <div className="space-y-6">
+              {/* Channel Moderators */}
               <section className="rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-5 sm:p-6">
-                <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center justify-between">
                   <div>
-                    <h2 className="font-display text-base font-bold text-[var(--vs-text)]">
-                      Chat moderation settings
-                    </h2>
+                    <h3 className="text-sm font-bold text-[var(--vs-text)]">
+                      Channel Moderators ({moderators.length})
+                    </h3>
                     <p className="mt-0.5 text-xs text-[var(--vs-text-muted)]">
-                      Configure chat cooldowns and manage channel bans.
+                      Moderators can timeout users, issue warnings, delete messages, and ban viewers.
                     </p>
                   </div>
-                  <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-semibold text-[var(--vs-text)]">
-                    <input
-                      type="checkbox"
-                      checked={user.slowMode}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        void updateChannelSettings({
-                          channelTitle: user.channelTitle,
-                          channelCategory: user.channelCategory,
-                          slowMode: checked,
-                        }).then((res) => {
-                          if (!res.ok) {
-                            toast.error(res.error ?? "Failed to update slow mode.");
-                            return;
-                          }
-                          toast.success(
-                            res.message ??
-                            (checked
-                              ? "Slow mode enabled (3s between messages)."
-                              : "Slow mode disabled."),
-                          );
-                        });
-                      }}
-                      className="h-4 w-4 rounded border-[var(--vs-border)] accent-[var(--vs-accent)]"
-                    />
-                    <span>Slow mode (3s)</span>
-                  </label>
+                </div>
+
+                <form
+                  onSubmit={handleAddModeratorSubmit}
+                  className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--vs-border)] pt-4"
+                >
+                  <input
+                    type="text"
+                    value={modInput}
+                    onChange={(e) => setModInput(e.target.value)}
+                    placeholder="Username to assign as moderator"
+                    aria-label="Username to assign as moderator"
+                    className="h-9 min-w-[200px] flex-1 rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-3 text-xs text-[var(--vs-text)] focus:border-[var(--vs-accent)] focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isModerating}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[var(--vs-accent)] px-3.5 text-xs font-semibold text-white transition-colors hover:bg-[var(--vs-accent-hover)] disabled:opacity-60"
+                  >
+                    <UserCheckIcon className="h-3.5 w-3.5" />
+                    <span>Assign Moderator</span>
+                  </button>
+                </form>
+
+                {moderators.length === 0 ? (
+                  <p className="mt-4 rounded-lg border border-dashed border-[var(--vs-border)] p-4 text-center text-xs text-[var(--vs-text-muted)]">
+                    No active moderators assigned yet.
+                  </p>
+                ) : (
+                  <ul className="mt-4 divide-y divide-[var(--vs-border)]">
+                    {moderators.map((mod) => (
+                      <li
+                        key={mod.username}
+                        className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"
+                      >
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <UserAvatar
+                            username={mod.username}
+                            displayName={mod.displayName}
+                            avatarUrl={mod.avatarUrl}
+                            size="sm"
+                          />
+                          <div className="min-w-0">
+                            <p className="font-mono text-xs font-semibold text-[var(--vs-text)]">
+                              @{mod.username}
+                            </p>
+                            <p className="text-[11px] text-[var(--vs-text-muted)]">
+                              {mod.displayName} · Added{" "}
+                              {new Date(mod.assignedAt).toLocaleDateString()}
+                            </p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isModerating}
+                          onClick={() => void handleRemoveModerator(mod.username)}
+                          className="rounded-md border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-2.5 py-1 text-xs font-semibold text-[var(--vs-live)] transition-colors hover:bg-[var(--vs-live)]/10 disabled:opacity-60"
+                        >
+                          Dismiss
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              {/* Silenced / Timeout Users */}
+              <section className="rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-5 sm:p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold text-[var(--vs-text)]">
+                      Silenced Users ({silences.length})
+                    </h3>
+                    <p className="mt-0.5 text-xs text-[var(--vs-text-muted)]">
+                      Users temporarily muted from participating in your channel&apos;s live chat.
+                    </p>
+                  </div>
+                </div>
+
+                <form
+                  onSubmit={handleSilenceSubmit}
+                  className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--vs-border)] pt-4"
+                >
+                  <input
+                    type="text"
+                    value={silenceInput}
+                    onChange={(e) => setSilenceInput(e.target.value)}
+                    placeholder="Username to silence"
+                    aria-label="Username to silence"
+                    className="h-9 min-w-[140px] flex-1 rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-3 text-xs text-[var(--vs-text)] focus:border-[var(--vs-accent)] focus:outline-none"
+                  />
+                  <select
+                    value={silenceDurationInput}
+                    onChange={(e) =>
+                      setSilenceDurationInput(
+                        e.target.value as "1h" | "5h" | "1d" | "1w" | "1m",
+                      )
+                    }
+                    aria-label="Silence duration"
+                    className="h-9 rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-2.5 text-xs font-semibold text-[var(--vs-text)] focus:border-[var(--vs-accent)] focus:outline-none"
+                  >
+                    <option value="1h">1 hour</option>
+                    <option value="5h">5 hours</option>
+                    <option value="1d">1 day</option>
+                    <option value="1w">1 week</option>
+                    <option value="1m">1 month</option>
+                  </select>
+                  <input
+                    type="text"
+                    value={silenceReasonInput}
+                    onChange={(e) => setSilenceReasonInput(e.target.value)}
+                    placeholder="Reason (optional)"
+                    aria-label="Silence reason"
+                    className="h-9 min-w-[160px] flex-1 rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-3 text-xs text-[var(--vs-text)] focus:border-[var(--vs-accent)] focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isModerating}
+                    className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-[var(--vs-accent)] px-3.5 text-xs font-semibold text-[var(--vs-accent)] transition-colors hover:bg-[var(--vs-accent)]/10 disabled:opacity-60"
+                  >
+                    <VolumeXIcon className="h-3.5 w-3.5" />
+                    <span>Silence User</span>
+                  </button>
+                </form>
+
+                {silences.length === 0 ? (
+                  <p className="mt-4 rounded-lg border border-dashed border-[var(--vs-border)] p-4 text-center text-xs text-[var(--vs-text-muted)]">
+                    No users are currently silenced on your channel.
+                  </p>
+                ) : (
+                  <ul className="mt-4 divide-y divide-[var(--vs-border)]">
+                    {silences.map((silence) => (
+                      <li
+                        key={silence.username}
+                        className="flex flex-wrap items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"
+                      >
+                        <div className="min-w-0">
+                          <p className="font-mono text-xs font-semibold text-[var(--vs-text)]">
+                            @{silence.username}
+                          </p>
+                          <p className="text-[11px] text-[var(--vs-text-muted)]">
+                            {silence.reason || "Silenced by moderation"} ·{" "}
+                            {silence.expiresAt
+                              ? `Expires at ${new Date(silence.expiresAt).toLocaleTimeString()}`
+                              : "Permanent"}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isModerating}
+                          onClick={() => void handleUnsilence(silence.username)}
+                          className="rounded-md border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-2.5 py-1 text-xs font-semibold text-[var(--vs-ok)] transition-colors hover:bg-[var(--vs-ok)]/10 disabled:opacity-60"
+                        >
+                          Unsilence
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              {/* Banned Users */}
+              <section className="rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-5 sm:p-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-sm font-bold text-[var(--vs-text)]">
+                      Banned users ({user.bannedUsers.length})
+                    </h3>
+                    <p className="mt-0.5 text-xs text-[var(--vs-text-muted)]">
+                      Permanently banned users who cannot view or participate in your stream.
+                    </p>
+                  </div>
                 </div>
 
                 <form
@@ -1069,14 +1335,6 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
                     <span>{isModerating ? "Applying..." : "Ban user"}</span>
                   </button>
                 </form>
-              </section>
-
-              <section className="rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-5 sm:p-6">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-bold text-[var(--vs-text)]">
-                    Banned users ({user.bannedUsers.length})
-                  </h3>
-                </div>
 
                 {user.bannedUsers.length === 0 ? (
                   <p className="mt-4 rounded-lg border border-dashed border-[var(--vs-border)] p-4 text-center text-xs text-[var(--vs-text-muted)]">

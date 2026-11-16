@@ -253,6 +253,7 @@ export const BanUserBodySchema = z.object({
     .max(200, "Ban reason must be at most 200 characters.")
     .optional()
     .transform((val) => (val && val.length > 0 ? val : "Channel moderation action")),
+  channelSlug: z.string().trim().optional(),
 });
 
 export const BanUsernameParamSchema = z.object({
@@ -261,6 +262,83 @@ export const BanUsernameParamSchema = z.object({
     .trim()
     .transform((val) => val.replace(/^@/, ""))
     .pipe(z.string().min(1).max(32)),
+});
+
+export const AddModeratorBodySchema = z.object({
+  channelSlug: z.string().trim().optional(),
+  username: z
+    .string({ required_error: "Username is required." })
+    .trim()
+    .transform((val) => val.replace(/^@/, ""))
+    .pipe(
+      z
+        .string()
+        .min(3, "Username must be at least 3 characters.")
+        .max(32, "Username must be at most 32 characters.")
+        .regex(USERNAME_REGEX, "Invalid username format."),
+    ),
+});
+
+export const ModeratorUsernameParamSchema = z.object({
+  username: z
+    .string()
+    .trim()
+    .transform((val) => val.replace(/^@/, ""))
+    .pipe(z.string().min(1).max(32)),
+});
+
+export const SilenceUserBodySchema = z.object({
+  username: z
+    .string({ required_error: "Username to silence is required." })
+    .trim()
+    .transform((val) => val.replace(/^@/, ""))
+    .pipe(
+      z
+        .string()
+        .min(3, "Username must be at least 3 characters.")
+        .max(32, "Username must be at most 32 characters.")
+        .regex(USERNAME_REGEX, "Invalid username format."),
+    ),
+  duration: z.enum(["1h", "5h", "1d", "1w", "1m", "permanent"]).optional().default("1h"),
+  reason: z
+    .string()
+    .trim()
+    .max(200, "Reason must be at most 200 characters.")
+    .optional()
+    .transform((val) => (val && val.length > 0 ? val : "Channel moderation action")),
+  channelSlug: z.string().trim().optional(),
+});
+
+export const SilenceUsernameParamSchema = z.object({
+  username: z
+    .string()
+    .trim()
+    .transform((val) => val.replace(/^@/, ""))
+    .pipe(z.string().min(1).max(32)),
+});
+
+export const ModerationQuerySchema = z.object({
+  channelSlug: z.string().trim().optional(),
+});
+
+export const WarnUserBodySchema = z.object({
+  username: z
+    .string({ required_error: "Username to warn is required." })
+    .trim()
+    .transform((val) => val.replace(/^@/, ""))
+    .pipe(
+      z
+        .string()
+        .min(3, "Username must be at least 3 characters.")
+        .max(32, "Username must be at most 32 characters.")
+        .regex(USERNAME_REGEX, "Invalid username format."),
+    ),
+  reason: z
+    .string({ required_error: "Warning reason is required." })
+    .trim()
+    .min(1, "Warning reason is required.")
+    .max(300, "Warning reason must be at most 300 characters."),
+  channelSlug: z.string().trim().optional(),
 });
 
 export const SearchUsersQuerySchema = z.object({
