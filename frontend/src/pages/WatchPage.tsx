@@ -5,8 +5,10 @@ import {
   CalendarIcon,
   CheckIcon,
   ClockIcon,
+  CompassIcon,
   CopyIcon,
   HeartIcon,
+  SearchXIcon,
   UsersIcon,
 } from "../components/Icons";
 import type { AppRoute } from "../components/Navbar";
@@ -16,8 +18,52 @@ import { ChatRail } from "../components/ChatRail";
 import { useAuth } from "../lib/auth";
 import { formatViewerCount, type StreamDirectoryItem } from "../lib/streams";
 
-interface WatchPageProps {
-  channel: StreamDirectoryItem;
+export function ChannelNotFound({
+  slug,
+  onNavigate,
+}: {
+  slug: string;
+  onNavigate: (route: AppRoute) => void;
+}) {
+  const cleanSlug = slug.trim().replace(/^@/, "");
+
+  return (
+    <div
+      data-testid="channel-not-found"
+      className="mx-auto max-w-2xl px-4 py-16 text-center"
+    >
+      <div className="rounded-2xl border border-[var(--vs-border)] bg-[var(--vs-surface)] p-8 shadow-sm sm:p-12">
+        <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--vs-accent)]/10 text-[var(--vs-accent)] ring-1 ring-[var(--vs-accent)]/20">
+          <SearchXIcon className="h-8 w-8 text-[var(--vs-accent)]" data-testid="channel-not-found-icon" />
+        </div>
+        <h1 className="font-display text-2xl font-bold tracking-tight text-[var(--vs-text)]">
+          Channel not found
+        </h1>
+        <p className="mt-3 text-sm font-semibold text-[var(--vs-text)] sm:text-base">
+          {cleanSlug ? `There is no channel for @${cleanSlug}` : "No channel specified"}
+        </p>
+        <p className="mt-2 text-xs text-[var(--vs-text-muted)]">
+          The channel you are looking for does not exist, has been deleted, or the channel name is incorrect.
+        </p>
+        <div className="mt-8 flex justify-center">
+          <button
+            type="button"
+            onClick={() => onNavigate({ page: "home" })}
+            className="inline-flex items-center gap-2 rounded-xl bg-[var(--vs-accent)] px-5 py-2.5 text-xs font-semibold text-white transition hover:bg-[var(--vs-accent-hover)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vs-accent)]"
+          >
+            <CompassIcon className="h-4 w-4" />
+            <span>Browse other channels</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export interface WatchPageProps {
+  channel?: StreamDirectoryItem | null | undefined;
+  slug?: string | undefined;
+  notFound?: boolean | undefined;
   hlsBaseUrl: string;
   whepBaseUrl?: string | undefined;
   wsUrl: string;
@@ -29,6 +75,8 @@ interface WatchPageProps {
 
 export function WatchPage({
   channel,
+  slug,
+  notFound = false,
   hlsBaseUrl,
   whepBaseUrl,
   wsUrl,
@@ -41,20 +89,29 @@ export function WatchPage({
   const [theaterMode, setTheaterMode] = useState(false);
   const [copiedShare, setCopiedShare] = useState(false);
 
-  const isUserBanned =
-    isBanned ||
-    Boolean(
-      user &&
-        user.bannedFromSlugs?.some(
+  const isUserBanned = Boolean(
+    !notFound &&
+      channel &&
+      (isBanned ||
+        user?.bannedFromSlugs?.some(
           (s) => s.trim().replace(/^@/, "").toLowerCase() === channel.slug.trim().replace(/^@/, "").toLowerCase(),
-        ),
-    );
+        )),
+  );
 
   useEffect(() => {
-    if (isUserBanned) {
+    if (isUserBanned && channel) {
       toast.error(`You have been banned by @${channel.slug}.`);
     }
-  }, [isUserBanned, channel.slug]);
+  }, [isUserBanned, channel]);
+
+  if (notFound || !channel) {
+    return (
+      <ChannelNotFound
+        slug={slug ?? channel?.slug ?? ""}
+        onNavigate={onNavigate}
+      />
+    );
+  }
 
   if (isUserBanned) {
     return (

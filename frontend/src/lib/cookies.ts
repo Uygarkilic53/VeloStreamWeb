@@ -193,3 +193,42 @@ export function clearPreferenceCookies(): void {
   deleteCookie(COOKIE_REMEMBER_NAME);
 }
 
+export function hasStoredSession(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  try {
+    const rememberedCookie = getRememberMeCookie();
+    if (rememberedCookie?.user) {
+      return true;
+    }
+    const localTokens = window.localStorage.getItem("velostream_auth_session");
+    if (localTokens) {
+      const parsed = JSON.parse(localTokens);
+      if (parsed?.accessToken) {
+        return true;
+      }
+    }
+    const sessionTokens = window.sessionStorage.getItem("velostream_auth_session");
+    if (sessionTokens) {
+      const parsed = JSON.parse(sessionTokens);
+      if (parsed?.accessToken) {
+        return true;
+      }
+    }
+    const previewRaw =
+      window.localStorage.getItem("velostream_preview_user") ||
+      window.sessionStorage.getItem("velostream_preview_user");
+    if (previewRaw) {
+      const previewObj = JSON.parse(previewRaw);
+      if (previewObj && previewObj.sessionKind === "preview") {
+        return true;
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+

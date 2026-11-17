@@ -218,26 +218,21 @@ export function AuthPage({ mode, onSwitchMode, onNavigate }: AuthPageProps) {
         </div>
 
         <div className="relative z-10 mt-8">
-          <button
-            type="button"
-            onClick={() => onNavigate({ page: "watch", slug: "mira_codes" })}
-            className="group block w-full overflow-hidden rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] text-left transition-colors hover:border-[var(--vs-accent)]"
+          <div
+            data-testid="mira-codes-showcase"
+            aria-label="Featured channel: @mira_codes"
+            className="block w-full cursor-default select-none overflow-hidden rounded-xl border border-[var(--vs-border)] bg-[var(--vs-surface)] text-left"
           >
             <StreamThumbnail scene="rust" viewerCount={2418} quality="1080p60" compact />
-            <div className="flex items-center justify-between gap-3 px-4 py-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-[var(--vs-text)] group-hover:text-[var(--vs-accent)]">
-                  Building a custom 2D lighting engine in Rust
-                </p>
-                <p className="mt-0.5 text-xs text-[var(--vs-text-muted)]">
-                  @mira_codes · Programming
-                </p>
-              </div>
-              <span className="shrink-0 rounded-md border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-2 py-1 text-xs font-medium text-[var(--vs-text)]">
-                Watch live
-              </span>
+            <div className="px-4 py-3">
+              <p className="truncate text-sm font-semibold text-[var(--vs-text)]">
+                Building a custom 2D lighting engine in Rust
+              </p>
+              <p className="mt-0.5 text-xs text-[var(--vs-text-muted)]">
+                @mira_codes · Programming
+              </p>
             </div>
-          </button>
+          </div>
         </div>
       </aside>
 

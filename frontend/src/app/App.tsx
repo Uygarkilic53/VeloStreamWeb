@@ -8,8 +8,9 @@ import { AuthPage } from "../pages/AuthPage";
 import { DiscoveryPage } from "../pages/DiscoveryPage";
 import { ProfilePage } from "../pages/ProfilePage";
 import { StudioPage } from "../pages/StudioPage";
-import { WatchPage } from "../pages/WatchPage";
+import { WatchPage, ChannelNotFound } from "../pages/WatchPage";
 import { AuthProvider, useAuth, type StreamCategory } from "../lib/auth";
+import { hasStoredSession } from "../lib/cookies";
 import { getFrontendEnv } from "../lib/env";
 import { INITIAL_LIVE_STREAMS, type StreamDirectoryItem } from "../lib/streams";
 import { saveStreamSnapshot } from "../lib/snapshots";
@@ -30,6 +31,46 @@ const CATEGORY_SET = new Set<string>([
   "Music & Audio",
   "Creative",
 ]);
+
+const LAST_ROUTE_STORAGE_KEY = "velostream_last_route";
+
+function isValidLastRoute(candidate: unknown): candidate is AppRoute {
+  if (!candidate || typeof candidate !== "object") return false;
+  const c = candidate as AppRoute;
+  if (c.page === "signin" || c.page === "signup") return false;
+  if (c.page === "home" || c.page === "following" || c.page === "profile" || c.page === "studio") {
+    return true;
+  }
+  if (c.page === "watch" && typeof c.slug === "string" && c.slug.trim().length > 0) {
+    return true;
+  }
+  return false;
+}
+
+function getStoredLastRoute(): AppRoute | null {
+  if (typeof window === "undefined" || !window.sessionStorage) return null;
+  try {
+    const raw = window.sessionStorage.getItem(LAST_ROUTE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (isValidLastRoute(parsed)) {
+      return parsed;
+    }
+  } catch {
+    // Ignore storage parse errors
+  }
+  return null;
+}
+
+function saveStoredLastRoute(routeToSave: AppRoute) {
+  if (typeof window === "undefined" || !window.sessionStorage) return;
+  if (routeToSave.page === "signin" || routeToSave.page === "signup") return;
+  try {
+    window.sessionStorage.setItem(LAST_ROUTE_STORAGE_KEY, JSON.stringify(routeToSave));
+  } catch {
+    // Ignore storage errors
+  }
+}
 
 // eslint-disable-next-line react-refresh/only-export-components
 export function parseRouteFromLocation(): AppRoute {
@@ -102,12 +143,51 @@ function deriveInitials(name: string): string {
 
 export function AppShell() {
   const env = useMemo(() => getFrontendEnv(), []);
-  const { user, markChannelBanned, clearChannelBanned } = useAuth();
+  const { user, isHydrating, markChannelBanned, clearChannelBanned } = useAuth();
   const userRef = useRef(user);
   userRef.current = user;
+  const isHydratingRef = useRef(isHydrating);
+  isHydratingRef.current = isHydrating;
   const { theme, openCookieSettings } = useTheme();
 
-  const [route, setRoute] = useState<AppRoute>(() => parseRouteFromLocation());
+  const [route, setRoute] = useState<AppRoute>(() => {
+    const initial = parseRouteFromLocation();
+    const hasSession = hasStoredSession();
+
+    if (hasSession && (initial.page === "signin" || initial.page === "signup")) {
+      const targetRoute = getStoredLastRoute() ?? { page: "home" };
+      if (typeof window !== "undefined") {
+        const nextUrl = serializeRouteUrl(targetRoute);
+        window.history.replaceState(null, "", nextUrl);
+      }
+      return targetRoute;
+    }
+
+    if (!hasSession && initial.page === "studio") {
+      if (typeof window !== "undefined") {
+        const nextUrl = serializeRouteUrl({ page: "signin" });
+        window.history.replaceState(null, "", nextUrl);
+      }
+      return { page: "signin" };
+    }
+
+    return initial;
+  });
+  const lastNonAuthRouteRef = useRef<AppRoute | null>(null);
+  if (lastNonAuthRouteRef.current === null) {
+    const initial = parseRouteFromLocation();
+    const hasSession = hasStoredSession();
+    if (
+      initial.page !== "signin" &&
+      initial.page !== "signup" &&
+      !(initial.page === "studio" && !hasSession)
+    ) {
+      saveStoredLastRoute(initial);
+      lastNonAuthRouteRef.current = initial;
+    } else {
+      lastNonAuthRouteRef.current = getStoredLastRoute() ?? { page: "home" };
+    }
+  }
   const [activeCategory, setActiveCategory] = useState<"All Live" | StreamCategory>("All Live");
   const [searchQuery, setSearchQuery] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -124,6 +204,7 @@ export function AppShell() {
   const [bannedChannels, setBannedChannels] = useState<
     Record<string, { isBanned: boolean; reason: string | null }>
   >({});
+  const [notFoundChannels, setNotFoundChannels] = useState<Record<string, boolean>>({});
   const wsOverridesRef = useRef<
     Map<string, { status: "live" | "offline"; user?: PublicUserSummary }>
   >(new Map());
@@ -221,6 +302,12 @@ export function AppShell() {
                         (p) => p.username.toLowerCase() !== cleanSlug,
                       );
                       return [...next, { ...fetched, isLive: true }];
+                    });
+                    setNotFoundChannels((prev) => {
+                      if (!prev[cleanSlug]) return prev;
+                      const next = { ...prev };
+                      delete next[cleanSlug];
+                      return next;
                     });
                     setResolvedChannels((prev) => {
                       const existing = prev[cleanSlug];
@@ -350,13 +437,116 @@ export function AppShell() {
 
   useEffect(() => {
     function handlePopState() {
-      setRoute(parseRouteFromLocation());
+      const nextRoute = parseRouteFromLocation();
+      const hasSession = Boolean(userRef.current || hasStoredSession());
+
+      if (hasSession && (nextRoute.page === "signin" || nextRoute.page === "signup")) {
+        const targetRoute =
+          lastNonAuthRouteRef.current &&
+          lastNonAuthRouteRef.current.page !== "signin" &&
+          lastNonAuthRouteRef.current.page !== "signup"
+            ? lastNonAuthRouteRef.current
+            : getStoredLastRoute() ?? { page: "home" };
+
+        setRoute(targetRoute);
+        if (typeof window !== "undefined") {
+          const nextUrl = serializeRouteUrl(targetRoute);
+          window.history.replaceState(null, "", nextUrl);
+        }
+        return;
+      }
+
+      if (!hasSession && nextRoute.page === "studio") {
+        setRoute({ page: "signin" });
+        if (typeof window !== "undefined") {
+          const nextUrl = serializeRouteUrl({ page: "signin" });
+          window.history.replaceState(null, "", nextUrl);
+        }
+        return;
+      }
+
+      setRoute(nextRoute);
     }
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
+  useEffect(() => {
+    if (route.page !== "signin" && route.page !== "signup") {
+      if (route.page === "studio" && !user && !hasStoredSession()) {
+        return;
+      }
+      lastNonAuthRouteRef.current = route;
+      saveStoredLastRoute(route);
+    }
+  }, [route, user]);
+
+  useEffect(() => {
+    if (isHydrating) {
+      return;
+    }
+
+    if (user && (route.page === "signin" || route.page === "signup")) {
+      const targetRoute =
+        lastNonAuthRouteRef.current &&
+        lastNonAuthRouteRef.current.page !== "signin" &&
+        lastNonAuthRouteRef.current.page !== "signup"
+          ? lastNonAuthRouteRef.current
+          : getStoredLastRoute() ?? { page: "home" };
+
+      setRoute(targetRoute);
+      if (typeof window !== "undefined") {
+        const nextUrl = serializeRouteUrl(targetRoute);
+        window.history.replaceState(null, "", nextUrl);
+      }
+      return;
+    }
+
+    if (!user && route.page === "studio") {
+      setRoute({ page: "signin" });
+      if (typeof window !== "undefined") {
+        const nextUrl = serializeRouteUrl({ page: "signin" });
+        window.history.replaceState(null, "", nextUrl);
+      }
+      return;
+    }
+  }, [isHydrating, route.page, user]);
+
   const navigate = useCallback((nextRoute: AppRoute) => {
+    const hasSession = Boolean(userRef.current || hasStoredSession());
+
+    if (hasSession && (nextRoute.page === "signin" || nextRoute.page === "signup")) {
+      const targetRoute =
+        lastNonAuthRouteRef.current &&
+        lastNonAuthRouteRef.current.page !== "signin" &&
+        lastNonAuthRouteRef.current.page !== "signup"
+          ? lastNonAuthRouteRef.current
+          : getStoredLastRoute() ?? { page: "home" };
+
+      setRoute(targetRoute);
+      if (typeof window !== "undefined") {
+        const nextUrl = serializeRouteUrl(targetRoute);
+        if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
+          window.history.replaceState(null, "", nextUrl);
+        }
+      }
+      return;
+    }
+
+    if (!hasSession && nextRoute.page === "studio") {
+      setRoute({ page: "signin" });
+      if (typeof window !== "undefined") {
+        const nextUrl = serializeRouteUrl({ page: "signin" });
+        if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
+          window.history.replaceState(null, "", nextUrl);
+        }
+        if (!navigator.userAgent.includes("jsdom")) {
+          window.scrollTo?.({ top: 0 });
+        }
+      }
+      return;
+    }
+
     setRoute(nextRoute);
     if (typeof window !== "undefined") {
       const nextUrl = serializeRouteUrl(nextRoute);
@@ -430,14 +620,21 @@ export function AppShell() {
 
   const handleSelectSearchedUser = useCallback(
     (match: DirectoryUserMatch) => {
+      const matchSlug = match.username.toLowerCase();
+      setNotFoundChannels((prev) => {
+        if (!prev[matchSlug]) return prev;
+        const next = { ...prev };
+        delete next[matchSlug];
+        return next;
+      });
       const existing = streams.find(
-        (s) => s.slug.toLowerCase() === match.username.toLowerCase(),
+        (s) => s.slug.toLowerCase() === matchSlug,
       );
       if (!existing) {
         const item = publicUserToStreamItem(match);
         setResolvedChannels((prev) => ({
           ...prev,
-          [match.username.toLowerCase()]: item,
+          [matchSlug]: item,
         }));
       }
       navigate({ page: "watch", slug: match.username });
@@ -445,22 +642,26 @@ export function AppShell() {
     [navigate, streams],
   );
 
+  const cleanWatchSlug = useMemo(() => {
+    if (route.page !== "watch") return "";
+    return route.slug.trim().replace(/^@/, "").toLowerCase();
+  }, [route]);
+
   useEffect(() => {
-    if (route.page !== "watch") {
+    if (route.page !== "watch" || !cleanWatchSlug) {
       return;
     }
-    const slugLower = route.slug.toLowerCase();
-    if (bannedChannels[slugLower]) {
+    if (bannedChannels[cleanWatchSlug] || notFoundChannels[cleanWatchSlug]) {
       return;
     }
-    const inDirectory = streams.some((s) => s.slug.toLowerCase() === slugLower);
-    if ((inDirectory && !user) || (resolvedChannels[slugLower] && !user?.bannedFromSlugs?.includes(slugLower))) {
+    const inDirectory = streams.some((s) => s.slug.toLowerCase() === cleanWatchSlug);
+    if ((inDirectory && !user) || (resolvedChannels[cleanWatchSlug] && !user?.bannedFromSlugs?.includes(cleanWatchSlug))) {
       return;
     }
-    if (user && user.username.toLowerCase() === slugLower) {
+    if (user && user.username.toLowerCase() === cleanWatchSlug) {
       setResolvedChannels((prev) => ({
         ...prev,
-        [slugLower]: publicUserToStreamItem({
+        [cleanWatchSlug]: publicUserToStreamItem({
           id: user.id,
           username: user.username,
           displayName: user.displayName,
@@ -471,29 +672,57 @@ export function AppShell() {
           channelCategory: user.channelCategory,
         }),
       }));
+      setNotFoundChannels((prev) => {
+        if (!prev[cleanWatchSlug]) return prev;
+        const next = { ...prev };
+        delete next[cleanWatchSlug];
+        return next;
+      });
       return;
     }
 
     const controller = new AbortController();
-    void fetchPublicUserApi(route.slug, controller.signal, user?.accessToken).then((fetched) => {
-      if (controller.signal.aborted || !fetched) {
-        return;
-      }
-      if ("isBanned" in fetched && fetched.isBanned) {
-        markChannelBanned(route.slug);
-        setBannedChannels((prev) => ({
+    void fetchPublicUserApi(cleanWatchSlug, controller.signal, user?.accessToken)
+      .then((fetched) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        if (!fetched) {
+          setNotFoundChannels((prev) => ({
+            ...prev,
+            [cleanWatchSlug]: true,
+          }));
+          return;
+        }
+        if ("isBanned" in fetched && fetched.isBanned) {
+          markChannelBanned(cleanWatchSlug);
+          setBannedChannels((prev) => ({
+            ...prev,
+            [cleanWatchSlug]: { isBanned: true, reason: fetched.reason },
+          }));
+          return;
+        }
+        setNotFoundChannels((prev) => {
+          if (!prev[cleanWatchSlug]) return prev;
+          const next = { ...prev };
+          delete next[cleanWatchSlug];
+          return next;
+        });
+        setResolvedChannels((prev) => ({
           ...prev,
-          [slugLower]: { isBanned: true, reason: fetched.reason },
+          [cleanWatchSlug]: publicUserToStreamItem(fetched),
         }));
-        return;
-      }
-      setResolvedChannels((prev) => ({
-        ...prev,
-        [slugLower]: publicUserToStreamItem(fetched),
-      }));
-    });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setNotFoundChannels((prev) => ({
+            ...prev,
+            [cleanWatchSlug]: true,
+          }));
+        }
+      });
     return () => controller.abort();
-  }, [bannedChannels, isBroadcastLive, markChannelBanned, resolvedChannels, route, streams, user]);
+  }, [bannedChannels, cleanWatchSlug, isBroadcastLive, markChannelBanned, notFoundChannels, resolvedChannels, route.page, streams, user]);
 
   const showSidebar =
     route.page === "home" ||
@@ -503,23 +732,24 @@ export function AppShell() {
 
   const isWatchChannelBanned =
     route.page === "watch" &&
+    Boolean(cleanWatchSlug) &&
     (Boolean(
       user?.bannedFromSlugs?.some(
-        (s) => s.trim().replace(/^@/, "").toLowerCase() === route.slug.trim().replace(/^@/, "").toLowerCase(),
+        (s) => s.trim().replace(/^@/, "").toLowerCase() === cleanWatchSlug,
       ),
     ) ||
-      bannedChannels[route.slug.trim().replace(/^@/, "").toLowerCase()]?.isBanned === true);
+      bannedChannels[cleanWatchSlug]?.isBanned === true);
 
   const activeWatchChannel =
-    route.page === "watch"
-      ? streams.find((stream) => stream.slug.toLowerCase() === route.slug.toLowerCase()) ??
-        resolvedChannels[route.slug.toLowerCase()] ??
+    route.page === "watch" && cleanWatchSlug
+      ? streams.find((stream) => stream.slug.toLowerCase() === cleanWatchSlug) ??
+        resolvedChannels[cleanWatchSlug] ??
         (isWatchChannelBanned
           ? {
-              id: `ch_${route.slug}`,
-              slug: route.slug,
-              displayName: route.slug,
-              title: `${route.slug}'s channel`,
+              id: `ch_${cleanWatchSlug}`,
+              slug: cleanWatchSlug,
+              displayName: cleanWatchSlug,
+              title: `${cleanWatchSlug}'s channel`,
               isLive: false,
               viewerCount: 0,
               category: "Programming" as const,
@@ -532,7 +762,7 @@ export function AppShell() {
               bio: "",
               schedule: [],
               scene: "rust" as const,
-              avatarInitials: route.slug.slice(0, 2).toUpperCase(),
+              avatarInitials: cleanWatchSlug.slice(0, 2).toUpperCase(),
               avatarAccent: "#EF4444",
             }
           : undefined)
@@ -598,7 +828,12 @@ export function AppShell() {
                 onNavigate={navigate}
                 onSelectCategory={setActiveCategory}
                 isBanned={isWatchChannelBanned}
-                banReason={bannedChannels[route.slug.toLowerCase()]?.reason ?? null}
+                banReason={bannedChannels[cleanWatchSlug]?.reason ?? null}
+              />
+            ) : !cleanWatchSlug || notFoundChannels[cleanWatchSlug] ? (
+              <ChannelNotFound
+                slug={route.slug}
+                onNavigate={navigate}
               />
             ) : (
               <div className="flex min-h-[400px] flex-col items-center justify-center p-8">
@@ -606,28 +841,38 @@ export function AppShell() {
               </div>
             ))}
 
-          {(route.page === "signin" || route.page === "signup") && (
-            <AuthPage
-              mode={route.page}
-              onSwitchMode={(nextMode) => navigate({ page: nextMode })}
-              onNavigate={navigate}
-            />
-          )}
+          {(route.page === "signin" || route.page === "signup") &&
+            (user ? null : isHydrating ? (
+              <div className="flex min-h-[400px] flex-col items-center justify-center p-8">
+                <LoadingSpinner label="Checking session..." />
+              </div>
+            ) : (
+              <AuthPage
+                mode={route.page}
+                onSwitchMode={(nextMode) => navigate({ page: nextMode })}
+                onNavigate={navigate}
+              />
+            ))}
 
           {route.page === "profile" && <ProfilePage onNavigate={navigate} />}
 
-          {route.page === "studio" && (
-            <StudioPage
-              whipBaseUrl={env.whipBaseUrl}
-              wsUrl={env.realtimeWsUrl}
-              onNavigate={navigate}
-              isBroadcastLive={isBroadcastLive}
-              onSetBroadcastLive={(nextLive, details) => {
-                setIsBroadcastLive(nextLive);
-                setBroadcastMeta(details);
-              }}
-            />
-          )}
+          {route.page === "studio" &&
+            (user ? (
+              <StudioPage
+                whipBaseUrl={env.whipBaseUrl}
+                wsUrl={env.realtimeWsUrl}
+                onNavigate={navigate}
+                isBroadcastLive={isBroadcastLive}
+                onSetBroadcastLive={(nextLive, details) => {
+                  setIsBroadcastLive(nextLive);
+                  setBroadcastMeta(details);
+                }}
+              />
+            ) : isHydrating ? (
+              <div className="flex min-h-[400px] flex-col items-center justify-center p-8">
+                <LoadingSpinner label="Loading studio..." />
+              </div>
+            ) : null)}
         </div>
       </div>
 

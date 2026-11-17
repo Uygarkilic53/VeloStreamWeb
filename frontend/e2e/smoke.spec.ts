@@ -312,13 +312,12 @@ test("displays empty state on both sidebar and homepage when backend reports no 
   await expect(emptyHeading).toBeVisible();
   await expect(page.getByText(/nobody is currently streaming on velostream/i)).toBeVisible();
 
-  // Clicking 'Start streaming' navigates to Studio page
+  // Clicking 'Start streaming' redirects unsigned user to sign in page
   const startStreamingBtns = page.getByRole("button", { name: /start streaming/i });
   await expect(startStreamingBtns.first()).toBeVisible();
   await startStreamingBtns.first().click();
 
-  const studioMain = page.getByRole("main", { name: /broadcast studio/i });
-  await expect(studioMain.getByRole("heading", { name: /broadcast studio/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /sign in to velostream/i })).toBeVisible();
 
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
@@ -463,6 +462,67 @@ test("shows live stream preview when hovering on snapshot card and restores snap
   await expect(streamCard.locator("video")).toHaveCount(0);
   await expect(streamCard.getByText("SNAPSHOT")).toBeVisible();
   await expect(streamCard.getByAltText(/live stream snapshot/i)).toBeVisible();
+
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+});
+
+test("shows channel not found view with channel param and react icon when navigating to non-existent channel", async ({
+  page,
+}) => {
+  const { pageErrors, consoleErrors } = attachRuntimeMonitors(page);
+  await stubOfflineBackends(page);
+
+  await page.route("**/api/v1/channels/live", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ channels: [] }),
+    });
+  });
+
+  await page.route("**/api/v1/users/mira_codes", async (route) => {
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "User not found" }),
+    });
+  });
+
+  await page.goto("/?page=watch&channel=mira_codes");
+
+  await page.getByRole("button", { name: /accept cookies & enter velostream/i }).click();
+
+  await expect(page.getByRole("heading", { name: /channel not found/i })).toBeVisible();
+  await expect(page.getByText(/there is no channel for @mira_codes/i)).toBeVisible();
+  await expect(page.getByTestId("channel-not-found-icon")).toBeVisible();
+  await expect(page.getByText(/loading channel\.\.\./i)).toHaveCount(0);
+
+  // Clicking 'Browse other channels' navigates to home
+  await page.getByRole("button", { name: /browse other channels/i }).click();
+  await expect(page).toHaveURL("http://127.0.0.1:4173/");
+
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+});
+
+test("confirms showcase button/badge is removed from mira_codes card on auth page", async ({
+  page,
+}) => {
+  const { pageErrors, consoleErrors } = attachRuntimeMonitors(page);
+  await stubOfflineBackends(page);
+
+  await page.goto("/?page=signin");
+
+  await page.getByRole("button", { name: /accept cookies & enter velostream/i }).click();
+
+  const showcaseCard = page.getByTestId("mira-codes-showcase");
+  await expect(showcaseCard).toBeVisible();
+  await expect(showcaseCard.getByText(/@mira_codes · Programming/i)).toBeVisible();
+  // Showcase badge or button must not exist
+  await expect(page.getByText("Showcase")).toHaveCount(0);
+  await expect(showcaseCard.locator("button")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /watch live/i })).toHaveCount(0);
 
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);

@@ -28,6 +28,7 @@ import {
 import {
   clearRememberMeCookie,
   getRememberMeCookie,
+  hasStoredSession,
   setRememberMeCookie,
 } from "./cookies";
 import { getFrontendEnv } from "./env";
@@ -355,9 +356,32 @@ export interface AuthContextValue {
 export const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<UserAccount | null>(null);
+  const [user, setUser] = useState<UserAccount | null>(() => {
+    if (typeof window === "undefined") return null;
+    const rememberedCookie = getRememberMeCookie();
+    if (rememberedCookie?.user) {
+      return rememberedCookie.user as UserAccount;
+    }
+    try {
+      const previewRaw =
+        window.localStorage.getItem("velostream_preview_user") ||
+        window.sessionStorage.getItem("velostream_preview_user");
+      if (previewRaw) {
+        const previewObj = JSON.parse(previewRaw) as UserAccount;
+        if (previewObj && previewObj.sessionKind === "preview") {
+          return previewObj;
+        }
+      }
+    } catch {
+      // Ignore storage errors
+    }
+    return null;
+  });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isHydrating, setIsHydrating] = useState(true);
+  const [isHydrating, setIsHydrating] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return hasStoredSession();
+  });
   const tokensRef = useRef<StoredSessionTokens | null>(null);
 
   const persistTokens = useCallback((next: StoredSessionTokens | null) => {

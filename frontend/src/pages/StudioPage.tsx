@@ -72,7 +72,7 @@ export function StudioPage({
   isBroadcastLive,
   onSetBroadcastLive,
 }: StudioPageProps) {
-  const { user, enterPreviewSession, updateChannelSettings } = useAuth();
+  const { user, updateChannelSettings } = useAuth();
 
   const [broadcastState, setBroadcastState] = useState<BroadcastState>(
     isBroadcastLive ? "live" : "idle",
@@ -108,6 +108,7 @@ export function StudioPage({
   const whipSessionRef = useRef<WhipSession | null>(null);
   const liveSocketRef = useRef<WebSocket | null>(null);
   const avatarImageRef = useRef<HTMLImageElement | null>(null);
+  const metadataNoticeTimerRef = useRef<number | undefined>(undefined);
 
   const channelSlug = user?.username ?? "broadcaster";
   const whipEndpoint = `${whipBaseUrl}/${channelSlug}/whip`;
@@ -448,6 +449,9 @@ export function StudioPage({
       }
       audioMonitorRef.current?.stop();
       audioMonitorRef.current = null;
+      if (typeof window !== "undefined") {
+        window.clearTimeout(metadataNoticeTimerRef.current);
+      }
     };
   }, []);
 
@@ -776,7 +780,10 @@ export function StudioPage({
       onSetBroadcastLive(true, { title: cleanTitle, category: categoryInput });
     }
     setMetadataSavedNotice(true);
-    window.setTimeout(() => setMetadataSavedNotice(false), 1800);
+    if (typeof window !== "undefined") {
+      window.clearTimeout(metadataNoticeTimerRef.current);
+      metadataNoticeTimerRef.current = window.setTimeout(() => setMetadataSavedNotice(false), 1800);
+    }
   }
 
   async function handleGoLive() {
@@ -982,13 +989,6 @@ export function StudioPage({
             You are viewing Studio as a guest. Sign in or create a creator account to broadcast live with your own stream key.
           </p>
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => enterPreviewSession()}
-              className="rounded-md border border-[var(--vs-border)] bg-[var(--vs-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--vs-text)] hover:bg-[var(--vs-surface-subtle)]"
-            >
-              Preview mode
-            </button>
             <button
               type="button"
               onClick={() => onNavigate({ page: "signin" })}

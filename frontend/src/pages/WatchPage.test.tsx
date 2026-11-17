@@ -165,3 +165,46 @@ describe("WatchPage - Banned user state", () => {
     expect(screen.getByLabelText(/stream chat/i)).toBeInTheDocument();
   });
 });
+
+describe("WatchPage - Channel Not Found state", () => {
+  it("renders channel not found UI with channel param and react icon when notFound is true", async () => {
+    const onNavigate = vi.fn();
+    const user = userEvent.setup();
+
+    renderWithAuth(
+      <WatchPage
+        notFound={true}
+        slug="mira_codes"
+        hlsBaseUrl="http://localhost:8888"
+        wsUrl="ws://localhost:3002"
+        onNavigate={onNavigate}
+        onSelectCategory={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: /channel not found/i })).toBeInTheDocument();
+    expect(screen.getByText(/there is no channel for @mira_codes/i)).toBeInTheDocument();
+    expect(screen.getByTestId("channel-not-found-icon")).toBeInTheDocument();
+
+    const browseBtn = screen.getByRole("button", { name: /browse other channels/i });
+    await user.click(browseBtn);
+    expect(onNavigate).toHaveBeenCalledWith({ page: "home" });
+  });
+
+  it("normalizes leading @ when displaying channel param in channel not found UI", () => {
+    renderWithAuth(
+      <WatchPage
+        channel={null}
+        slug="@unknown_creator"
+        hlsBaseUrl="http://localhost:8888"
+        wsUrl="ws://localhost:3002"
+        onNavigate={vi.fn()}
+        onSelectCategory={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: /channel not found/i })).toBeInTheDocument();
+    expect(screen.getByText(/there is no channel for @unknown_creator/i)).toBeInTheDocument();
+    expect(screen.getByTestId("channel-not-found-icon")).toBeInTheDocument();
+  });
+});

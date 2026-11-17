@@ -45,7 +45,6 @@ type SettingsTab = "profile" | "channel" | "security" | "moderation";
 export function ProfilePage({ onNavigate }: ProfilePageProps) {
   const {
     user,
-    enterPreviewSession,
     updateProfile,
     uploadAvatar,
     removeAvatar,
@@ -181,13 +180,6 @@ export function ProfilePage({ onNavigate }: ProfilePageProps) {
               className="rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface)] px-4 py-2 text-sm font-semibold text-[var(--vs-text)] transition-colors hover:bg-[var(--vs-surface-subtle)]"
             >
               Create account
-            </button>
-            <button
-              type="button"
-              onClick={() => enterPreviewSession()}
-              className="rounded-lg border border-[var(--vs-border)] bg-[var(--vs-surface-subtle)] px-4 py-2 text-sm font-medium text-[var(--vs-text)] transition-colors hover:border-[var(--vs-accent)] hover:text-[var(--vs-accent)]"
-            >
-              Preview signed-in account
             </button>
           </div>
         </section>
