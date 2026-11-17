@@ -2,6 +2,11 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthContext, type AuthContextValue, type UserAccount } from "../lib/auth";
+import {
+  clearPreferenceCookies,
+  getStudioPermissionsCookie,
+  setStudioPermissionsCookie,
+} from "../lib/cookies";
 import { StudioPage } from "./StudioPage";
 import { publishWhipStream, type WhipSession } from "../lib/whip";
 
@@ -135,6 +140,7 @@ describe("StudioPage - Go Live & OBS Sync", () => {
   let writeTextMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    clearPreferenceCookies();
     MockWebSocket.instances = [];
     globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
 
@@ -178,6 +184,7 @@ describe("StudioPage - Go Live & OBS Sync", () => {
   });
 
   afterEach(() => {
+    clearPreferenceCookies();
     globalThis.WebSocket = originalWebSocket;
   });
 
@@ -302,9 +309,11 @@ describe("StudioPage - Go Live & OBS Sync", () => {
     });
 
     // Verify broadcast ended
-    expect(onSetBroadcastLive).toHaveBeenCalledWith(false, {
-      title: mockUser.channelTitle,
-      category: mockUser.channelCategory,
+    await waitFor(() => {
+      expect(onSetBroadcastLive).toHaveBeenCalledWith(false, {
+        title: mockUser.channelTitle,
+        category: mockUser.channelCategory,
+      });
     });
 
     // Verify UI returned to idle
@@ -779,5 +788,275 @@ describe("StudioPage - Go Live & OBS Sync", () => {
     const avatar = within(studioBanner).getByTestId("studio-broadcaster-avatar");
     expect(avatar).toHaveTextContent("AL");
     expect(within(studioBanner).queryByAltText(/Ada Lovelace profile avatar/i)).not.toBeInTheDocument();
+  });
+
+  it("restores camera access automatically on mount when remembered in cookie across reboot", async () => {
+    // Simulate user previously granted camera before reboot
+    setStudioPermissionsCookie({ camera: true, cameraGranted: true, mic: true }, mockUser.username);
+
+    renderStudioPage({ user: mockUser });
+
+    // Camera button should immediately reflect active state
+    expect(screen.getByRole("button", { name: /camera on/i })).toBeInTheDocument();
+
+    // Verify getUserMedia was automatically invoked for video preview without user re-clicking button
+    await waitFor(() => {
+      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+        video: true,
+        audio: false,
+      });
+    });
+  });
+
+  it("restores muted microphone state on mount without calling getUserMedia when mic was remembered as muted", async () => {
+    // Simulate user had muted microphone before reboot
+    setStudioPermissionsCookie({ mic: false, camera: false }, mockUser.username);
+
+    renderStudioPage({ user: mockUser });
+
+    // Microphone button should show muted state
+    expect(screen.getByRole("button", { name: /mic muted/i })).toBeInTheDocument();
+
+    // Verify audio getUserMedia was not triggered for preview
+    expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalledWith({
+      audio: true,
+      video: false,
+    });
+  });
+
+  it("persists camera granting to cookie when camera is toggled on and off", async () => {
+    const user = userEvent.setup();
+    renderStudioPage({ user: mockUser });
+
+    // Initial state: camera is off, no cookie
+    const cameraBtn = screen.getByRole("button", { name: /^camera$/i });
+    await user.click(cameraBtn);
+
+    // Camera is turned on -> cookie saved with camera: true, cameraGranted: true
+    const cookieAfterOn = getStudioPermissionsCookie(mockUser.username);
+    expect(cookieAfterOn?.camera).toBe(true);
+    expect(cookieAfterOn?.cameraGranted).toBe(true);
+
+    // Toggle camera off -> cookie updated with camera: false, cameraGranted: true
+    const cameraOnBtn = screen.getByRole("button", { name: /camera on/i });
+    await user.click(cameraOnBtn);
+
+    const cookieAfterOff = getStudioPermissionsCookie(mockUser.username);
+    expect(cookieAfterOff?.camera).toBe(false);
+    expect(cookieAfterOff?.cameraGranted).toBe(true);
+  });
+
+  it("persists microphone toggle changes to cookie", async () => {
+    const user = userEvent.setup();
+    renderStudioPage({ user: mockUser });
+
+    // Initial state: mic is active by default -> cookie is saved with mic: true
+    await waitFor(() => {
+      expect(getStudioPermissionsCookie(mockUser.username)?.mic).toBe(true);
+    });
+
+    // Mute mic
+    const micBtn = screen.getByRole("button", { name: /mic active/i });
+    await user.click(micBtn);
+
+    expect(getStudioPermissionsCookie(mockUser.username)?.mic).toBe(false);
+
+    // Unmute mic
+    const micMutedBtn = screen.getByRole("button", { name: /mic muted/i });
+    await user.click(micMutedBtn);
+
+    expect(getStudioPermissionsCookie(mockUser.username)?.mic).toBe(true);
+  });
+
+  it("remembers user-specific media grantings when logging into studio", async () => {
+    const userBob: UserAccount = {
+      ...mockUser,
+      id: "usr_bob",
+      username: "streamer_bob",
+      displayName: "Streamer Bob",
+    };
+
+    // Pre-set specific grantings for streamer_bob (camera: true, mic: false)
+    setStudioPermissionsCookie(
+      { camera: true, cameraGranted: true, mic: false, micGranted: true },
+      userBob.username,
+    );
+
+    renderStudioPage({ user: userBob });
+
+    // Streamer Bob should have camera on and mic muted
+    expect(screen.getByRole("button", { name: /camera on/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /mic muted/i })).toBeInTheDocument();
+  });
+
+  it("acquires and enables audio track when unmuting from a remembered muted state", async () => {
+    const user = userEvent.setup();
+    setStudioPermissionsCookie({ mic: false, camera: false }, mockUser.username);
+
+    renderStudioPage({ user: mockUser });
+
+    const micMutedBtn = screen.getByRole("button", { name: /mic muted/i });
+    await user.click(micMutedBtn);
+
+    await waitFor(() => {
+      expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+        audio: true,
+        video: false,
+      });
+    });
+
+    const activeMicBtn = await screen.findByRole("button", { name: /mic active/i });
+    expect(activeMicBtn).toBeInTheDocument();
+    expect(mockTrack.enabled).toBe(true);
+    expect(getStudioPermissionsCookie(mockUser.username)?.mic).toBe(true);
+  });
+
+  it("updates cookie with declined granting when camera permission is rejected", async () => {
+    const user = userEvent.setup();
+    renderStudioPage({ user: mockUser });
+
+    // Simulate camera permission rejection on click
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(
+      new Error("NotAllowedError: Permission denied"),
+    );
+
+    const cameraBtn = screen.getByRole("button", { name: /^camera$/i });
+    await user.click(cameraBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Camera permission was declined/i)).toBeInTheDocument();
+    });
+
+    const cookie = getStudioPermissionsCookie(mockUser.username);
+    expect(cookie?.camera).toBe(false);
+    expect(cookie?.cameraGranted).toBe(false);
+  });
+
+  it("stops camera stream tracks immediately if component unmounts while camera getUserMedia is pending", async () => {
+    let resolveGetUserMedia!: (stream: MediaStream) => void;
+    const pendingPromise = new Promise<MediaStream>((resolve) => {
+      resolveGetUserMedia = resolve;
+    });
+
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementation((constraints) => {
+      if (constraints && typeof constraints === "object" && "video" in constraints && constraints.video) {
+        return pendingPromise;
+      }
+      return Promise.resolve(mockMediaStream as unknown as MediaStream);
+    });
+
+    const unmountTrackStopMock = vi.fn();
+    const delayedTrack = {
+      id: "delayed-camera-track",
+      kind: "video",
+      stop: unmountTrackStopMock,
+      enabled: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    const delayedStream = {
+      getTracks: () => [delayedTrack],
+      getVideoTracks: () => [delayedTrack],
+      getAudioTracks: () => [],
+    } as unknown as MediaStream;
+
+    const { unmount } = renderStudioPage({ user: mockUser });
+
+    // User clicks camera while preview is loading
+    const cameraBtn = screen.getByRole("button", { name: /^camera$/i });
+    fireEvent.click(cameraBtn);
+
+    // Component unmounts while getUserMedia is still awaiting hardware/permission response
+    unmount();
+
+    // Now getUserMedia finally resolves
+    await act(async () => {
+      resolveGetUserMedia(delayedStream);
+      await Promise.resolve();
+    });
+
+    // Verify track was immediately stopped to prevent webcam hardware indicator remaining on
+    expect(unmountTrackStopMock).toHaveBeenCalled();
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue(mockMediaStream as unknown as MediaStream);
+  });
+
+  it("stops audio stream tracks immediately if component unmounts while audio getUserMedia is pending", async () => {
+    let resolveAudioGetUserMedia!: (stream: MediaStream) => void;
+    const pendingPromise = new Promise<MediaStream>((resolve) => {
+      resolveAudioGetUserMedia = resolve;
+    });
+
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementation((constraints) => {
+      if (constraints && typeof constraints === "object" && "audio" in constraints && constraints.audio) {
+        return pendingPromise;
+      }
+      return Promise.resolve(mockMediaStream as unknown as MediaStream);
+    });
+
+    const audioTrackStopMock = vi.fn();
+    const delayedAudioTrack = {
+      id: "delayed-audio-track",
+      kind: "audio",
+      stop: audioTrackStopMock,
+      enabled: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    const delayedAudioStream = {
+      getTracks: () => [delayedAudioTrack],
+      getVideoTracks: () => [],
+      getAudioTracks: () => [delayedAudioTrack],
+    } as unknown as MediaStream;
+
+    const { unmount } = renderStudioPage({ user: mockUser });
+
+    // Component unmounts while audio getUserMedia is in flight
+    unmount();
+
+    // Audio stream resolves after unmount
+    await act(async () => {
+      resolveAudioGetUserMedia(delayedAudioStream);
+      await Promise.resolve();
+    });
+
+    // Verify track was immediately stopped
+    expect(audioTrackStopMock).toHaveBeenCalled();
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockResolvedValue(mockMediaStream as unknown as MediaStream);
+  });
+
+  it("does not reset user-toggled camera state when profile details update for the same user", async () => {
+    const user = userEvent.setup();
+    // User had camera: false in cookie
+    setStudioPermissionsCookie({ camera: false, mic: true }, mockUser.username);
+
+    const { rerender, authValue } = renderStudioPage({ user: mockUser });
+
+    // User explicitly turns camera ON
+    const cameraBtn = screen.getByRole("button", { name: /^camera$/i });
+    await user.click(cameraBtn);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /camera on/i })).toBeInTheDocument();
+    });
+
+    // Now user saves title / category: parent rerenders with new user object with same username
+    const updatedUser: UserAccount = {
+      ...mockUser,
+      channelTitle: "New Updated Title",
+    };
+
+    rerender(
+      <AuthContext.Provider value={{ ...authValue, user: updatedUser }}>
+        <StudioPage
+          whipBaseUrl="http://localhost:8889"
+          wsUrl="http://localhost:4000"
+          onNavigate={vi.fn()}
+          isBroadcastLive={false}
+          onSetBroadcastLive={vi.fn()}
+        />
+      </AuthContext.Provider>,
+    );
+
+    // Camera must still remain active
+    expect(screen.getByRole("button", { name: /camera on/i })).toBeInTheDocument();
   });
 });

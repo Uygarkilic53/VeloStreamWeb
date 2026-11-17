@@ -4,19 +4,23 @@ import {
   acceptCookiesWithTheme,
   clearPreferenceCookies,
   clearRememberMeCookie,
+  clearStudioPermissionsCookie,
   COOKIE_CONSENT_ACCEPTED,
   COOKIE_CONSENT_NAME,
   COOKIE_DISCLOSURES,
   COOKIE_REMEMBER_NAME,
+  COOKIE_STUDIO_PERMISSIONS_NAME,
   COOKIE_THEME_NAME,
   getRememberMeCookie,
   getStoredThemePreference,
+  getStudioPermissionsCookie,
   hasAcceptedCookies,
   parseCookies,
   persistThemeCookie,
   serializeRememberSession,
   setCookie,
   setRememberMeCookie,
+  setStudioPermissionsCookie,
   type RememberedSessionData,
 } from "./cookies";
 
@@ -158,5 +162,91 @@ describe("cookies preference helpers and disclosures", () => {
     expect(parseCookies(document.cookie)[COOKIE_REMEMBER_NAME]).toBeUndefined();
     expect(getRememberMeCookie()).toBeNull();
     expect(getStoredThemePreference()).toBe("light");
+  });
+
+  it("persists, retrieves, and updates studio media grantings via cookie", () => {
+    expect(getStudioPermissionsCookie()).toBeNull();
+
+    setStudioPermissionsCookie({ mic: true, camera: true, micGranted: true, cameraGranted: true });
+    const stored = getStudioPermissionsCookie();
+    expect(stored).not.toBeNull();
+    expect(stored?.mic).toBe(true);
+    expect(stored?.camera).toBe(true);
+    expect(stored?.micGranted).toBe(true);
+    expect(stored?.cameraGranted).toBe(true);
+
+    // Partial update: turn camera off while keeping mic granted
+    setStudioPermissionsCookie({ camera: false });
+    const updated = getStudioPermissionsCookie();
+    expect(updated?.camera).toBe(false);
+    expect(updated?.mic).toBe(true);
+    expect(updated?.cameraGranted).toBe(true);
+    expect(updated?.micGranted).toBe(true);
+
+    // Clear studio permissions individually
+    clearStudioPermissionsCookie();
+    expect(getStudioPermissionsCookie()).toBeNull();
+  });
+
+  it("remembers user-specific media grantings independently across users and server reboots", () => {
+    // Broadcaster Alice grants mic and camera
+    setStudioPermissionsCookie(
+      { mic: true, camera: true, micGranted: true, cameraGranted: true },
+      "alice",
+    );
+    // Broadcaster Bob mutes mic and keeps camera off
+    setStudioPermissionsCookie(
+      { mic: false, camera: false, micGranted: true, cameraGranted: false },
+      "bob",
+    );
+
+    const aliceGrant = getStudioPermissionsCookie("alice");
+    expect(aliceGrant?.mic).toBe(true);
+    expect(aliceGrant?.camera).toBe(true);
+
+    const bobGrant = getStudioPermissionsCookie("bob");
+    expect(bobGrant?.mic).toBe(false);
+    expect(bobGrant?.camera).toBe(false);
+
+    // Unknown user falls back to the top-level device grant without inheriting other users' private settings
+    const fallbackGrant = getStudioPermissionsCookie("charlie");
+    expect(fallbackGrant).not.toBeNull();
+    expect(fallbackGrant?.camera).toBe(false);
+    expect(fallbackGrant?.cameraGranted).toBe(false);
+
+    // Normalizes leading @ and case variations for user lookup
+    const aliceAtGrant = getStudioPermissionsCookie("@Alice");
+    expect(aliceAtGrant?.mic).toBe(true);
+    expect(aliceAtGrant?.camera).toBe(true);
+  });
+
+  it("isolates device-level grantings from user-specific grantings", () => {
+    // Guest/device grants camera and mic
+    setStudioPermissionsCookie({ mic: true, camera: true, micGranted: true, cameraGranted: true });
+    expect(getStudioPermissionsCookie()?.camera).toBe(true);
+
+    // Streamer Dave specifically sets camera off
+    setStudioPermissionsCookie({ camera: false }, "dave");
+    expect(getStudioPermissionsCookie("dave")?.camera).toBe(false);
+
+    // Device grant remains intact for guests
+    expect(getStudioPermissionsCookie()?.camera).toBe(true);
+  });
+
+  it("clears studio media permissions when preference cookies are wiped", () => {
+    setStudioPermissionsCookie({ mic: true, camera: true });
+    expect(getStudioPermissionsCookie()).not.toBeNull();
+
+    clearPreferenceCookies();
+    expect(getStudioPermissionsCookie()).toBeNull();
+    expect(parseCookies(document.cookie)[COOKIE_STUDIO_PERMISSIONS_NAME]).toBeUndefined();
+  });
+
+  it("gracefully handles corrupted or malformed studio permission cookie strings", () => {
+    setCookie(COOKIE_STUDIO_PERMISSIONS_NAME, "{invalid_json:");
+    expect(getStudioPermissionsCookie()).toBeNull();
+
+    setCookie(COOKIE_STUDIO_PERMISSIONS_NAME, "12345");
+    expect(getStudioPermissionsCookie()).toBeNull();
   });
 });

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "react-toastify";
 import { CookieConsentGate } from "../components/CookieConsentGate";
+import { LeaveStudioModal } from "../components/LeaveStudioModal";
 import { LoadingSpinner } from "../components/LoadingSpinner";
 import { Navbar, type AppRoute } from "../components/Navbar";
 import { Sidebar } from "../components/Sidebar";
@@ -19,6 +20,7 @@ import {
   fetchLiveChannelsApi,
   fetchPublicUserApi,
   publicUserToStreamItem,
+  setChannelLiveApi,
   useDirectorySearch,
   type DirectoryUserMatch,
   type PublicUserSummary,
@@ -134,6 +136,26 @@ function serializeRouteUrl(route: AppRoute): string {
   }
 }
 
+function getRouteDisplayName(route?: AppRoute | null): string {
+  if (!route) return "another page";
+  switch (route.page) {
+    case "home":
+      return "Browse";
+    case "following":
+      return "Following";
+    case "watch":
+      return `@${route.slug}`;
+    case "profile":
+      return "Profile";
+    case "signin":
+      return "Sign In";
+    case "signup":
+      return "Sign Up";
+    case "studio":
+      return "Studio";
+  }
+}
+
 function deriveInitials(name: string): string {
   const parts = name.trim().split(/\s+/);
   const first = parts[0]?.[0] ?? "V";
@@ -143,7 +165,7 @@ function deriveInitials(name: string): string {
 
 export function AppShell() {
   const env = useMemo(() => getFrontendEnv(), []);
-  const { user, isHydrating, markChannelBanned, clearChannelBanned } = useAuth();
+  const { user, isHydrating, markChannelBanned, clearChannelBanned, signOut } = useAuth();
   const userRef = useRef(user);
   userRef.current = user;
   const isHydratingRef = useRef(isHydrating);
@@ -193,6 +215,25 @@ export function AppShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const [isBroadcastLive, setIsBroadcastLive] = useState(false);
+  const isBroadcastLiveRef = useRef(isBroadcastLive);
+  isBroadcastLiveRef.current = isBroadcastLive;
+  const [isBroadcasting, setIsBroadcasting] = useState(false);
+  const isBroadcastingRef = useRef(isBroadcasting);
+  isBroadcastingRef.current = isBroadcasting;
+  const routeRef = useRef(route);
+  routeRef.current = route;
+
+  const [isLeaveStudioModalOpen, setIsLeaveStudioModalOpen] = useState(false);
+  const [pendingNavigation, setPendingNavigation] = useState<{
+    route: AppRoute;
+    signOutAfter?: boolean;
+  } | null>(null);
+  const pendingNavigationRef = useRef<{
+    route: AppRoute;
+    signOutAfter?: boolean;
+  } | null>(null);
+  const [isEndingBroadcast, setIsEndingBroadcast] = useState(false);
+  const endBroadcastRef = useRef<(() => Promise<void>) | null>(null);
   const [broadcastMeta, setBroadcastMeta] = useState<{
     title: string;
     category: StreamCategory;
@@ -440,6 +481,20 @@ export function AppShell() {
       const nextRoute = parseRouteFromLocation();
       const hasSession = Boolean(userRef.current || hasStoredSession());
 
+      if (
+        routeRef.current.page === "studio" &&
+        (isBroadcastLiveRef.current || isBroadcastingRef.current) &&
+        nextRoute.page !== "studio"
+      ) {
+        if (typeof window !== "undefined") {
+          window.history.pushState(null, "", serializeRouteUrl({ page: "studio" }));
+        }
+        pendingNavigationRef.current = { route: nextRoute };
+        setPendingNavigation({ route: nextRoute });
+        setIsLeaveStudioModalOpen(true);
+        return;
+      }
+
       if (hasSession && (nextRoute.page === "signin" || nextRoute.page === "signup")) {
         const targetRoute =
           lastNonAuthRouteRef.current &&
@@ -470,6 +525,17 @@ export function AppShell() {
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
+
+  useEffect(() => {
+    if (!isBroadcastLive && !isBroadcasting) return;
+    function handleBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = "";
+      return "";
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isBroadcastLive, isBroadcasting]);
 
   useEffect(() => {
     if (route.page !== "signin" && route.page !== "signup") {
@@ -512,7 +578,7 @@ export function AppShell() {
     }
   }, [isHydrating, route.page, user]);
 
-  const navigate = useCallback((nextRoute: AppRoute) => {
+  const executeNavigation = useCallback((nextRoute: AppRoute) => {
     const hasSession = Boolean(userRef.current || hasStoredSession());
 
     if (hasSession && (nextRoute.page === "signin" || nextRoute.page === "signup")) {
@@ -557,6 +623,86 @@ export function AppShell() {
         window.scrollTo?.({ top: 0 });
       }
     }
+  }, []);
+
+  const navigate = useCallback(
+    (nextRoute: AppRoute) => {
+      if (isEndingBroadcast) {
+        return;
+      }
+      // If currently broadcasting live or connecting in studio and clicked to other links in our site:
+      if (
+        route.page === "studio" &&
+        (isBroadcastLive || isBroadcasting) &&
+        nextRoute.page !== "studio"
+      ) {
+        pendingNavigationRef.current = { route: nextRoute };
+        setPendingNavigation({ route: nextRoute });
+        setIsLeaveStudioModalOpen(true);
+        return;
+      }
+
+      executeNavigation(nextRoute);
+    },
+    [route.page, isBroadcastLive, isBroadcasting, isEndingBroadcast, executeNavigation],
+  );
+
+  const handleSignOut = useCallback(() => {
+    if (isEndingBroadcast) {
+      return;
+    }
+    if (route.page === "studio" && (isBroadcastLive || isBroadcasting)) {
+      pendingNavigationRef.current = { route: { page: "home" }, signOutAfter: true };
+      setPendingNavigation({ route: { page: "home" }, signOutAfter: true });
+      setIsLeaveStudioModalOpen(true);
+      return;
+    }
+    void signOut();
+    executeNavigation({ page: "home" });
+  }, [route.page, isBroadcastLive, isBroadcasting, isEndingBroadcast, signOut, executeNavigation]);
+
+  const handleCancelLeaveStudio = useCallback(() => {
+    setIsLeaveStudioModalOpen(false);
+    setPendingNavigation(null);
+    pendingNavigationRef.current = null;
+  }, []);
+
+  const handleConfirmLeaveStudio = useCallback(async () => {
+    const pending = pendingNavigationRef.current;
+    setIsEndingBroadcast(true);
+
+    try {
+      if (endBroadcastRef.current) {
+        await endBroadcastRef.current();
+      } else {
+        if (userRef.current?.sessionKind !== "preview" && userRef.current?.accessToken) {
+          await setChannelLiveApi(false, userRef.current.accessToken);
+        }
+        toast.success("Broadcast ended.");
+      }
+    } catch {
+      if (userRef.current?.sessionKind !== "preview" && userRef.current?.accessToken) {
+        await setChannelLiveApi(false, userRef.current.accessToken).catch(() => ({ ok: false }));
+      }
+    } finally {
+      setIsBroadcastLive(false);
+      setIsBroadcasting(false);
+      setIsEndingBroadcast(false);
+      setIsLeaveStudioModalOpen(false);
+      setPendingNavigation(null);
+      pendingNavigationRef.current = null;
+    }
+
+    if (pending) {
+      if (pending.signOutAfter) {
+        await signOut();
+      }
+      executeNavigation(pending.route);
+    }
+  }, [executeNavigation, signOut]);
+
+  const handleRegisterEndBroadcast = useCallback((fn: (() => Promise<void>) | null) => {
+    endBroadcastRef.current = fn;
   }, []);
 
   const streams = useMemo<readonly StreamDirectoryItem[]>(() => {
@@ -775,6 +921,7 @@ export function AppShell() {
       <Navbar
         route={route}
         onNavigate={navigate}
+        onSignOut={handleSignOut}
         searchQuery={searchQuery}
         onSearchChange={(value) => {
           setSearchQuery(value);
@@ -865,8 +1012,13 @@ export function AppShell() {
                 isBroadcastLive={isBroadcastLive}
                 onSetBroadcastLive={(nextLive, details) => {
                   setIsBroadcastLive(nextLive);
+                  if (nextLive) {
+                    setIsBroadcasting(true);
+                  }
                   setBroadcastMeta(details);
                 }}
+                onRegisterEndBroadcast={handleRegisterEndBroadcast}
+                onSetBroadcasting={setIsBroadcasting}
               />
             ) : isHydrating ? (
               <div className="flex min-h-[400px] flex-col items-center justify-center p-8">
@@ -893,6 +1045,18 @@ export function AppShell() {
           </div>
         </div>
       </footer>
+
+      <LeaveStudioModal
+        isOpen={isLeaveStudioModalOpen}
+        onCancel={handleCancelLeaveStudio}
+        onConfirm={handleConfirmLeaveStudio}
+        targetPageName={
+          pendingNavigation?.signOutAfter
+            ? "sign out"
+            : getRouteDisplayName(pendingNavigation?.route)
+        }
+        isEnding={isEndingBroadcast}
+      />
     </div>
   );
 }

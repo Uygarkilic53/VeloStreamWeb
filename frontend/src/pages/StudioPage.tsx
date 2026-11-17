@@ -27,6 +27,10 @@ import { publishWhipStream, type WhipSession } from "../lib/whip";
 import { captureVideoFrame, saveStreamSnapshot } from "../lib/snapshots";
 import { createAudioMonitor, type AudioMonitor } from "../lib/audio-meter";
 import { drawBannerToCanvas } from "../lib/canvas-banner";
+import {
+  getStudioPermissionsCookie,
+  setStudioPermissionsCookie,
+} from "../lib/cookies";
 
 export type BroadcastState = "idle" | "capturing" | "connecting" | "live" | "ending";
 
@@ -39,6 +43,8 @@ interface StudioPageProps {
     nextLive: boolean,
     details: { title: string; category: StreamCategory },
   ) => void;
+  onRegisterEndBroadcast?: (fn: (() => Promise<void>) | null) => void;
+  onSetBroadcasting?: (isBroadcasting: boolean) => void;
 }
 
 const STUDIO_CATEGORIES: readonly StreamCategory[] = [
@@ -71,6 +77,8 @@ export function StudioPage({
   onNavigate,
   isBroadcastLive,
   onSetBroadcastLive,
+  onRegisterEndBroadcast,
+  onSetBroadcasting,
 }: StudioPageProps) {
   const { user, updateChannelSettings } = useAuth();
 
@@ -85,8 +93,18 @@ export function StudioPage({
     user?.channelCategory ?? "Programming",
   );
 
-  const [cameraActive, setCameraActive] = useState(false);
-  const [micActive, setMicActive] = useState(true);
+  const userKey = user?.username || user?.id;
+  const initialPermissions = getStudioPermissionsCookie(userKey);
+
+  const [cameraActive, setCameraActive] = useState<boolean>(() => {
+    return Boolean(initialPermissions?.camera);
+  });
+  const [micActive, setMicActive] = useState<boolean>(() => {
+    if (initialPermissions !== null && typeof initialPermissions.mic === "boolean") {
+      return initialPermissions.mic;
+    }
+    return true;
+  });
   const [screenActive, setScreenActive] = useState(false);
   const [mediaNotice, setMediaNotice] = useState<string | null>(null);
   const [metadataSavedNotice, setMetadataSavedNotice] = useState(false);
@@ -109,6 +127,22 @@ export function StudioPage({
   const liveSocketRef = useRef<WebSocket | null>(null);
   const avatarImageRef = useRef<HTMLImageElement | null>(null);
   const metadataNoticeTimerRef = useRef<number | undefined>(undefined);
+  const isMountedRef = useRef<boolean>(true);
+  const isCancelledOrEndedRef = useRef<boolean>(false);
+  const cameraActiveRef = useRef<boolean>(Boolean(initialPermissions?.camera));
+  const audioAcquiringPromiseRef = useRef<Promise<MediaStreamTrack | null> | null>(null);
+  const videoAcquiringPromiseRef = useRef<Promise<MediaStreamTrack | null> | null>(null);
+  const prevUserKeyRef = useRef<string | undefined>(userKey);
+  const userRef = useRef(user);
+  userRef.current = user;
+  const titleInputRef = useRef(titleInput);
+  titleInputRef.current = titleInput;
+  const categoryInputRef = useRef(categoryInput);
+  categoryInputRef.current = categoryInput;
+  const broadcastStateRef = useRef(broadcastState);
+  broadcastStateRef.current = broadcastState;
+  const isBroadcastLiveRef = useRef(isBroadcastLive);
+  isBroadcastLiveRef.current = isBroadcastLive;
 
   const channelSlug = user?.username ?? "broadcaster";
   const whipEndpoint = `${whipBaseUrl}/${channelSlug}/whip`;
@@ -138,6 +172,20 @@ export function StudioPage({
     if (!user) return;
     setTitleInput(user.channelTitle);
     setCategoryInput(user.channelCategory);
+    const currentUserKey = user.username || user.id;
+    if (prevUserKeyRef.current !== currentUserKey) {
+      prevUserKeyRef.current = currentUserKey;
+      const userPermissions = getStudioPermissionsCookie(currentUserKey);
+      if (userPermissions) {
+        if (typeof userPermissions.mic === "boolean") {
+          setMicActive(userPermissions.mic);
+        }
+        if (typeof userPermissions.camera === "boolean") {
+          setCameraActive(userPermissions.camera);
+          cameraActiveRef.current = userPermissions.camera;
+        }
+      }
+    }
   }, [user]);
 
   // Synchronize external live status changes with local state
@@ -263,47 +311,80 @@ export function StudioPage({
     }
   }, []);
 
-  const ensureAudioTrack = useCallback(async (): Promise<MediaStreamTrack | null> => {
+  const ensureAudioTrack = useCallback(async (desiredEnabled?: boolean): Promise<MediaStreamTrack | null> => {
+    if (audioAcquiringPromiseRef.current) {
+      return audioAcquiringPromiseRef.current;
+    }
+    const isEnabled = desiredEnabled !== undefined ? desiredEnabled : micActive;
     if (mediaStreamRef.current && mediaStreamRef.current.getAudioTracks().length > 0) {
       const existingTrack = mediaStreamRef.current.getAudioTracks()[0]!;
-      existingTrack.enabled = micActive;
+      existingTrack.enabled = isEnabled;
       audioMonitorRef.current?.updateStream(mediaStreamRef.current);
       return existingTrack;
     }
     if (typeof navigator !== "undefined" && navigator.mediaDevices?.getUserMedia) {
-      try {
-        const audioStream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
-          video: false,
-        });
-        const firstAudio = audioStream.getAudioTracks()[0] ?? null;
-        if (firstAudio) {
-          firstAudio.enabled = micActive;
-          // Stop secondary audio tracks from multi-channel devices
-          for (let i = 1; i < audioStream.getAudioTracks().length; i++) {
-            audioStream.getAudioTracks()[i]?.stop();
+      const acquire = async (): Promise<MediaStreamTrack | null> => {
+        try {
+          const audioStream = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+            video: false,
+          });
+          if (!isMountedRef.current) {
+            for (const track of audioStream.getTracks()) {
+              track.stop();
+            }
+            return null;
           }
-        }
-        if (mediaStreamRef.current) {
-          if (typeof mediaStreamRef.current.addTrack === "function") {
-            if (firstAudio && mediaStreamRef.current.getAudioTracks().length === 0) {
-              mediaStreamRef.current.addTrack(firstAudio);
+          const firstAudio = audioStream.getAudioTracks()[0] ?? null;
+          if (firstAudio) {
+            firstAudio.enabled = isEnabled;
+            // Stop secondary audio tracks from multi-channel devices
+            for (let i = 1; i < audioStream.getAudioTracks().length; i++) {
+              audioStream.getAudioTracks()[i]?.stop();
             }
           }
-        } else if (firstAudio) {
-          try {
-            mediaStreamRef.current = new MediaStream([firstAudio]);
-          } catch {
-            mediaStreamRef.current = audioStream;
+          if (mediaStreamRef.current) {
+            if (typeof mediaStreamRef.current.addTrack === "function") {
+              if (firstAudio && mediaStreamRef.current.getAudioTracks().length === 0) {
+                mediaStreamRef.current.addTrack(firstAudio);
+              }
+            }
+          } else if (firstAudio) {
+            try {
+              mediaStreamRef.current = new MediaStream([firstAudio]);
+            } catch {
+              mediaStreamRef.current = audioStream;
+            }
           }
+          audioMonitorRef.current?.updateStream(mediaStreamRef.current);
+          if (isMountedRef.current) {
+            setStudioPermissionsCookie({ mic: isEnabled, micGranted: true }, user?.username || user?.id);
+          }
+          return mediaStreamRef.current?.getAudioTracks()[0] ?? null;
+        } catch {
+          if (isMountedRef.current) {
+            // User declined mic or unsupported in current environment
+            setStudioPermissionsCookie({ mic: false, micGranted: false }, user?.username || user?.id);
+          }
+          return null;
+        } finally {
+          audioAcquiringPromiseRef.current = null;
         }
-        audioMonitorRef.current?.updateStream(mediaStreamRef.current);
-        return mediaStreamRef.current?.getAudioTracks()[0] ?? null;
-      } catch {
-        // User declined mic or unsupported in current environment
-      }
+      };
+      const promise = acquire();
+      audioAcquiringPromiseRef.current = promise;
+      return promise;
     }
     return null;
+  }, [micActive, user?.username, user?.id]);
+
+  // Synchronize existing audio track enabled property whenever micActive state changes
+  useEffect(() => {
+    if (mediaStreamRef.current) {
+      for (const track of mediaStreamRef.current.getAudioTracks()) {
+        track.enabled = micActive;
+      }
+    }
   }, [micActive]);
 
   // Request preview audio stream so mic meter and glowing avatar halo work in studio preview
@@ -311,7 +392,7 @@ export function StudioPage({
     let cancelled = false;
     async function initPreviewAudio() {
       if (micActive && (!mediaStreamRef.current || mediaStreamRef.current.getAudioTracks().length === 0)) {
-        await ensureAudioTrack();
+        await ensureAudioTrack(true);
         if (!cancelled) {
           void audioMonitorRef.current?.resume();
         }
@@ -411,7 +492,7 @@ export function StudioPage({
     setIsTalking(false);
   }
 
-  function updateStreamResolution(stream?: MediaStream | null) {
+  const updateStreamResolution = useCallback((stream?: MediaStream | null) => {
     const isNowLive = broadcastState === "live" || isBroadcastLive;
     if (!cameraActive && !screenActive) {
       if (isNowLive) {
@@ -438,14 +519,25 @@ export function StudioPage({
       return;
     }
     setStreamResolution("");
-  }
+  }, [broadcastState, isBroadcastLive, cameraActive, screenActive]);
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
+      isCancelledOrEndedRef.current = true;
+      onSetBroadcasting?.(false);
       stopMediaTracks();
       if (whipSessionRef.current) {
         void whipSessionRef.current.stop();
         whipSessionRef.current = null;
+      }
+      if (
+        (broadcastStateRef.current === "live" || isBroadcastLiveRef.current) &&
+        userRef.current?.sessionKind !== "preview" &&
+        userRef.current?.accessToken
+      ) {
+        void setChannelLiveApi(false, userRef.current.accessToken);
       }
       audioMonitorRef.current?.stop();
       audioMonitorRef.current = null;
@@ -453,7 +545,7 @@ export function StudioPage({
         window.clearTimeout(metadataNoticeTimerRef.current);
       }
     };
-  }, []);
+  }, [onSetBroadcasting]);
 
   // Listen for Escape key to close auth modal
   useEffect(() => {
@@ -488,10 +580,12 @@ export function StudioPage({
                 if (status === "live") {
                   setBroadcastState("live");
                   onSetBroadcastLive(true, { title: titleInput, category: categoryInput });
+                  onSetBroadcasting?.(true);
                   toast.success("OBS stream detected. You are now live.");
                 } else if (status === "offline") {
                   setBroadcastState("idle");
                   onSetBroadcastLive(false, { title: titleInput, category: categoryInput });
+                  onSetBroadcasting?.(false);
                   toast.info("OBS stream ended.");
                 }
               }
@@ -517,9 +611,9 @@ export function StudioPage({
         socket.close();
       }
     };
-  }, [wsUrl, channelSlug, titleInput, categoryInput, onSetBroadcastLive]);
+  }, [wsUrl, channelSlug, titleInput, categoryInput, onSetBroadcastLive, onSetBroadcasting]);
 
-  function switchToBannerTrackIfLive() {
+  const switchToBannerTrackIfLive = useCallback(() => {
     if ((broadcastState === "live" || isBroadcastLive) && whipSessionRef.current?.peerConnection) {
       const pc = whipSessionRef.current.peerConnection;
       let videoSender: RTCRtpSender | undefined;
@@ -537,12 +631,159 @@ export function StudioPage({
         void videoSender.replaceTrack(bannerTrack);
       }
     }
-  }
+  }, [broadcastState, isBroadcastLive]);
+
+  const ensureVideoTrack = useCallback(async (): Promise<MediaStreamTrack | null> => {
+    if (videoAcquiringPromiseRef.current) {
+      return videoAcquiringPromiseRef.current;
+    }
+    setMediaNotice(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMediaNotice(
+        "Browser camera capture is unavailable in this environment — using studio canvas preview.",
+      );
+      setCameraActive(false);
+      cameraActiveRef.current = false;
+      setStudioPermissionsCookie({ camera: false, cameraGranted: false }, user?.username || user?.id);
+      return null;
+    }
+    const acquire = async (): Promise<MediaStreamTrack | null> => {
+      try {
+        setScreenActive(false);
+        if (mediaStreamRef.current) {
+          for (const track of mediaStreamRef.current.getVideoTracks()) {
+            track.stop();
+            if (typeof mediaStreamRef.current.removeTrack === "function") {
+              mediaStreamRef.current.removeTrack(track);
+            }
+          }
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        if (!isMountedRef.current || !cameraActiveRef.current) {
+          for (const track of stream.getTracks()) {
+            track.stop();
+          }
+          return null;
+        }
+
+        const videoTrack = stream.getVideoTracks()[0];
+        for (let i = 1; i < stream.getVideoTracks().length; i++) {
+          stream.getVideoTracks()[i]?.stop();
+        }
+
+        if (mediaStreamRef.current) {
+          if (videoTrack && typeof mediaStreamRef.current.addTrack === "function") {
+            mediaStreamRef.current.addTrack(videoTrack);
+          }
+        } else {
+          const initialTracks: MediaStreamTrack[] = [];
+          if (videoTrack) initialTracks.push(videoTrack);
+          try {
+            mediaStreamRef.current = new MediaStream(initialTracks);
+          } catch {
+            mediaStreamRef.current = stream;
+          }
+        }
+
+        if (videoRef.current) {
+          try {
+            videoRef.current.srcObject = mediaStreamRef.current;
+          } catch {
+            // quiet JSDOM fallback
+          }
+        }
+        setCameraActive(true);
+        cameraActiveRef.current = true;
+        setStudioPermissionsCookie({ camera: true, cameraGranted: true }, user?.username || user?.id);
+        updateStreamResolution(mediaStreamRef.current);
+        audioMonitorRef.current?.updateStream(mediaStreamRef.current);
+
+        if (videoTrack && typeof videoTrack.addEventListener === "function") {
+          videoTrack.addEventListener("ended", () => {
+            if (mediaStreamRef.current && typeof mediaStreamRef.current.removeTrack === "function") {
+              mediaStreamRef.current.removeTrack(videoTrack);
+            }
+            if (isMountedRef.current) {
+              setCameraActive(false);
+              cameraActiveRef.current = false;
+              setStudioPermissionsCookie({ camera: false }, user?.username || user?.id);
+              updateStreamResolution();
+              switchToBannerTrackIfLive();
+            }
+          });
+        }
+
+        // If already live over WHIP, seamlessly update video track on active WebRTC peer connection
+        if (whipSessionRef.current?.peerConnection) {
+          const pc = whipSessionRef.current.peerConnection;
+          let videoSender: RTCRtpSender | undefined;
+          if (typeof pc.getTransceivers === "function") {
+            const transceiver = pc.getTransceivers().find(
+              (t) => t.sender?.track?.kind === "video" || t.receiver?.track?.kind === "video"
+            );
+            videoSender = transceiver?.sender;
+          }
+          if (!videoSender && typeof pc.getSenders === "function") {
+            videoSender = pc.getSenders().find((s) => s.track?.kind === "video");
+          }
+          if (videoSender && videoTrack && typeof videoSender.replaceTrack === "function") {
+            void videoSender.replaceTrack(videoTrack);
+          }
+        }
+        return videoTrack ?? null;
+      } catch {
+        if (isMountedRef.current) {
+          setMediaNotice("Camera permission was declined or no webcam device was found.");
+          setCameraActive(false);
+          cameraActiveRef.current = false;
+          setStudioPermissionsCookie({ camera: false, cameraGranted: false }, user?.username || user?.id);
+          setStreamResolution("");
+        }
+        return null;
+      } finally {
+        videoAcquiringPromiseRef.current = null;
+      }
+    };
+    const promise = acquire();
+    videoAcquiringPromiseRef.current = promise;
+    return promise;
+  }, [user?.username, user?.id, updateStreamResolution, switchToBannerTrackIfLive]);
+
+  // Request preview camera stream when cameraActive is true on mount (e.g. remembered via cookie)
+  useEffect(() => {
+    let cancelled = false;
+    async function initPreviewCamera() {
+      if (!cancelled && cameraActive && (!mediaStreamRef.current || mediaStreamRef.current.getVideoTracks().length === 0)) {
+        cameraActiveRef.current = true;
+        await ensureVideoTrack();
+      }
+    }
+    void initPreviewCamera();
+    return () => {
+      cancelled = true;
+    };
+  }, [cameraActive, ensureVideoTrack]);
+
+  // Keep video preview srcObject in sync whenever active video state changes
+  useEffect(() => {
+    if (videoRef.current && (cameraActive || screenActive) && mediaStreamRef.current) {
+      if (videoRef.current.srcObject !== mediaStreamRef.current) {
+        try {
+          videoRef.current.srcObject = mediaStreamRef.current;
+        } catch {
+          // quiet JSDOM fallback
+        }
+      }
+    }
+  }, [cameraActive, screenActive]);
 
   async function toggleCamera() {
     setMediaNotice(null);
     if (cameraActive) {
       setCameraActive(false);
+      cameraActiveRef.current = false;
+      setStudioPermissionsCookie({ camera: false }, user?.username || user?.id);
       if (mediaStreamRef.current) {
         for (const track of mediaStreamRef.current.getVideoTracks()) {
           track.stop();
@@ -558,88 +799,8 @@ export function StudioPage({
       switchToBannerTrackIfLive();
       return;
     }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setMediaNotice(
-        "Browser camera capture is unavailable in this environment — using studio canvas preview.",
-      );
-      setCameraActive(false);
-      return;
-    }
-    try {
-      setScreenActive(false);
-      if (mediaStreamRef.current) {
-        for (const track of mediaStreamRef.current.getVideoTracks()) {
-          track.stop();
-          if (typeof mediaStreamRef.current.removeTrack === "function") {
-            mediaStreamRef.current.removeTrack(track);
-          }
-        }
-      }
-
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-      const videoTrack = stream.getVideoTracks()[0];
-      for (let i = 1; i < stream.getVideoTracks().length; i++) {
-        stream.getVideoTracks()[i]?.stop();
-      }
-
-      if (mediaStreamRef.current) {
-        if (videoTrack && typeof mediaStreamRef.current.addTrack === "function") {
-          mediaStreamRef.current.addTrack(videoTrack);
-        }
-      } else {
-        const initialTracks: MediaStreamTrack[] = [];
-        if (videoTrack) initialTracks.push(videoTrack);
-        try {
-          mediaStreamRef.current = new MediaStream(initialTracks);
-        } catch {
-          mediaStreamRef.current = stream;
-        }
-      }
-
-      if (videoRef.current) {
-        try {
-          videoRef.current.srcObject = mediaStreamRef.current;
-        } catch {
-          // quiet JSDOM fallback
-        }
-      }
-      setCameraActive(true);
-      updateStreamResolution(mediaStreamRef.current);
-      audioMonitorRef.current?.updateStream(mediaStreamRef.current);
-
-      if (videoTrack && typeof videoTrack.addEventListener === "function") {
-        videoTrack.addEventListener("ended", () => {
-          if (mediaStreamRef.current && typeof mediaStreamRef.current.removeTrack === "function") {
-            mediaStreamRef.current.removeTrack(videoTrack);
-          }
-          setCameraActive(false);
-          updateStreamResolution();
-          switchToBannerTrackIfLive();
-        });
-      }
-
-      // If already live over WHIP, seamlessly update video track on active WebRTC peer connection
-      if (whipSessionRef.current?.peerConnection) {
-        const pc = whipSessionRef.current.peerConnection;
-        let videoSender: RTCRtpSender | undefined;
-        if (typeof pc.getTransceivers === "function") {
-          const transceiver = pc.getTransceivers().find(
-            (t) => t.sender?.track?.kind === "video" || t.receiver?.track?.kind === "video"
-          );
-          videoSender = transceiver?.sender;
-        }
-        if (!videoSender && typeof pc.getSenders === "function") {
-          videoSender = pc.getSenders().find((s) => s.track?.kind === "video");
-        }
-        if (videoSender && videoTrack && typeof videoSender.replaceTrack === "function") {
-          void videoSender.replaceTrack(videoTrack);
-        }
-      }
-    } catch {
-      setMediaNotice("Camera permission was declined or no webcam device was found.");
-      setCameraActive(false);
-      setStreamResolution("");
-    }
+    cameraActiveRef.current = true;
+    await ensureVideoTrack();
   }
 
   async function toggleMic() {
@@ -653,11 +814,13 @@ export function StudioPage({
     if (!nextMic) {
       setMicLevel(0);
       setIsTalking(false);
+      setStudioPermissionsCookie({ mic: false }, user?.username || user?.id);
     } else {
       void audioMonitorRef.current?.resume();
       if (!mediaStreamRef.current || mediaStreamRef.current.getAudioTracks().length === 0) {
-        await ensureAudioTrack();
+        await ensureAudioTrack(true);
       }
+      setStudioPermissionsCookie({ mic: true, micGranted: true }, user?.username || user?.id);
     }
   }
 
@@ -689,6 +852,8 @@ export function StudioPage({
     }
     try {
       setCameraActive(false);
+      cameraActiveRef.current = false;
+      setStudioPermissionsCookie({ camera: false }, user?.username || user?.id);
       if (mediaStreamRef.current) {
         for (const track of mediaStreamRef.current.getVideoTracks()) {
           track.stop();
@@ -803,12 +968,15 @@ export function StudioPage({
       updateStreamResolution();
       captureAndStoreSnapshot();
       onSetBroadcastLive(true, { title: cleanTitle, category: categoryInput });
+      onSetBroadcasting?.(true);
       toast.success("Broadcast started. You are now live.");
       return;
     }
 
     try {
       setBroadcastState("capturing");
+      isCancelledOrEndedRef.current = false;
+      onSetBroadcasting?.(true);
 
       if (!mediaStreamRef.current || mediaStreamRef.current.getAudioTracks().length === 0) {
         await ensureAudioTrack();
@@ -853,6 +1021,10 @@ export function StudioPage({
 
       setBroadcastState("connecting");
       const session = await publishWhipStream(whipEndpoint, user.streamKey, publishStream);
+      if (!isMountedRef.current || isCancelledOrEndedRef.current) {
+        void session.stop();
+        return;
+      }
       whipSessionRef.current = session;
 
       setBroadcastState("live");
@@ -863,11 +1035,15 @@ export function StudioPage({
       }, 350);
       onSetBroadcastLive(true, { title: cleanTitle, category: categoryInput });
       if (user.accessToken) {
-        void setChannelLiveApi(true, user.accessToken);
+        await setChannelLiveApi(true, user.accessToken);
       }
       toast.success("Broadcast started. You are now live.");
     } catch (err: unknown) {
+      if (!isMountedRef.current || isCancelledOrEndedRef.current) {
+        return;
+      }
       setBroadcastState("idle");
+      onSetBroadcasting?.(false);
       let msg = err instanceof Error ? err.message : "Failed to establish WebRTC connection.";
       if (msg.includes("only a single video and a single audio track are supported")) {
         msg = "Broadcast rejected: Media server supports a single video and audio track. Extra tracks were detected.";
@@ -877,6 +1053,7 @@ export function StudioPage({
   }
 
   async function handleEndBroadcast() {
+    isCancelledOrEndedRef.current = true;
     setBroadcastState("ending");
     try {
       if (whipSessionRef.current) {
@@ -884,18 +1061,35 @@ export function StudioPage({
         whipSessionRef.current = null;
       }
       if (user?.sessionKind !== "preview" && user?.accessToken) {
-        void setChannelLiveApi(false, user.accessToken);
+        await setChannelLiveApi(false, user.accessToken);
       }
       setChatResetKey((prev) => prev + 1);
       onSetBroadcastLive(false, { title: titleInput, category: categoryInput });
+      onSetBroadcasting?.(false);
       toast.success("Broadcast ended.");
     } catch {
       toast.error("Failed to cleanly end broadcast.");
+      onSetBroadcastLive(false, { title: titleInput, category: categoryInput });
+      onSetBroadcasting?.(false);
     } finally {
       setBroadcastState("idle");
       updateStreamResolution();
     }
   }
+
+  const handleEndBroadcastRef = useRef(handleEndBroadcast);
+  handleEndBroadcastRef.current = handleEndBroadcast;
+
+  useEffect(() => {
+    if (onRegisterEndBroadcast) {
+      onRegisterEndBroadcast(async () => {
+        await handleEndBroadcastRef.current();
+      });
+      return () => {
+        onRegisterEndBroadcast(null);
+      };
+    }
+  }, [onRegisterEndBroadcast]);
 
   async function copyToClipboard(text: string, field: "whip" | "rtmp" | "key") {
     try {

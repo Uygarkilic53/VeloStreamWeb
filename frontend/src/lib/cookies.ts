@@ -1,6 +1,8 @@
 export const COOKIE_CONSENT_NAME = "velostream_cookie_consent";
 export const COOKIE_THEME_NAME = "velostream_theme";
 export const COOKIE_REMEMBER_NAME = "velostream_remember_session";
+export const COOKIE_STUDIO_PERMISSIONS_NAME = "velostream_studio_permissions";
+export const COOKIE_STUDIO_MEDIA_NAME = COOKIE_STUDIO_PERMISSIONS_NAME;
 export const COOKIE_CONSENT_ACCEPTED = "accepted";
 
 const ONE_YEAR_SECONDS = 60 * 60 * 24 * 365;
@@ -187,10 +189,204 @@ export function clearRememberMeCookie(): void {
   deleteCookie(COOKIE_REMEMBER_NAME);
 }
 
+export interface StudioMediaPermissions {
+  mic: boolean;
+  camera: boolean;
+  micGranted?: boolean | undefined;
+  cameraGranted?: boolean | undefined;
+}
+
+export interface StudioPermissionsCookiePayload extends StudioMediaPermissions {
+  users?: Record<string, StudioMediaPermissions> | undefined;
+}
+
+function normalizeUserKey(key?: string): string | undefined {
+  if (!key) return undefined;
+  const cleaned = key.trim().toLowerCase().replace(/^@/, "");
+  return cleaned || undefined;
+}
+
+export function getStudioPermissionsCookie(
+  userKey?: string,
+  cookieSource?: string,
+): StudioMediaPermissions | null {
+  const source =
+    cookieSource ?? (typeof document !== "undefined" ? document.cookie : "");
+  const cookies = parseCookies(source);
+  const raw = cookies[COOKIE_STUDIO_PERMISSIONS_NAME];
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<StudioPermissionsCookiePayload>;
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+
+    const normKey = normalizeUserKey(userKey);
+    if (normKey && parsed.users) {
+      const u = parsed.users[normKey] ?? (userKey ? parsed.users[userKey] : undefined);
+      if (u) {
+        const mic = typeof u.mic === "boolean" ? u.mic : Boolean(u.micGranted);
+        const camera = typeof u.camera === "boolean" ? u.camera : Boolean(u.cameraGranted);
+        return {
+          mic,
+          camera,
+          micGranted: typeof u.micGranted === "boolean" ? u.micGranted : mic,
+          cameraGranted: typeof u.cameraGranted === "boolean" ? u.cameraGranted : camera,
+        };
+      }
+    }
+
+    const hasDeviceGrant =
+      typeof parsed.mic === "boolean" ||
+      typeof parsed.camera === "boolean" ||
+      typeof parsed.micGranted === "boolean" ||
+      typeof parsed.cameraGranted === "boolean";
+
+    if (!hasDeviceGrant) {
+      return null;
+    }
+
+    const mic = typeof parsed.mic === "boolean" ? parsed.mic : (parsed.micGranted ?? true);
+    const camera = typeof parsed.camera === "boolean" ? parsed.camera : (parsed.cameraGranted ?? false);
+    return {
+      mic,
+      camera,
+      micGranted: typeof parsed.micGranted === "boolean" ? parsed.micGranted : mic,
+      cameraGranted: typeof parsed.cameraGranted === "boolean" ? parsed.cameraGranted : camera,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function setStudioPermissionsCookie(
+  permissions: Partial<StudioMediaPermissions>,
+  userKey?: string,
+  maxAgeSeconds = ONE_YEAR_SECONDS,
+): void {
+  if (typeof document === "undefined") {
+    return;
+  }
+
+  let existingPayload: StudioPermissionsCookiePayload = {
+    mic: true,
+    camera: false,
+    micGranted: false,
+    cameraGranted: false,
+    users: {},
+  };
+
+  const raw = parseCookies(document.cookie)[COOKIE_STUDIO_PERMISSIONS_NAME];
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<StudioPermissionsCookiePayload>;
+      if (parsed && typeof parsed === "object") {
+        existingPayload = {
+          mic: typeof parsed.mic === "boolean" ? parsed.mic : existingPayload.mic,
+          camera: typeof parsed.camera === "boolean" ? parsed.camera : existingPayload.camera,
+          micGranted:
+            typeof parsed.micGranted === "boolean"
+              ? parsed.micGranted
+              : existingPayload.micGranted ?? false,
+          cameraGranted:
+            typeof parsed.cameraGranted === "boolean"
+              ? parsed.cameraGranted
+              : existingPayload.cameraGranted ?? false,
+          users: parsed.users ?? {},
+        };
+      }
+    } catch {
+      // Keep defaults
+    }
+  }
+
+  const normKey = normalizeUserKey(userKey);
+  const users: Record<string, StudioMediaPermissions> = { ...(existingPayload.users ?? {}) };
+
+  let rootMic = existingPayload.mic;
+  let rootCamera = existingPayload.camera;
+  let rootMicGranted = existingPayload.micGranted;
+  let rootCameraGranted = existingPayload.cameraGranted;
+
+  if (normKey) {
+    const existingUserEntry = existingPayload.users?.[normKey] ?? (userKey ? existingPayload.users?.[userKey] : undefined);
+
+    const nextMic: boolean =
+      permissions.mic !== undefined
+        ? permissions.mic
+        : existingUserEntry?.mic !== undefined
+          ? existingUserEntry.mic
+          : existingPayload.mic;
+
+    const nextCamera: boolean =
+      permissions.camera !== undefined
+        ? permissions.camera
+        : existingUserEntry?.camera !== undefined
+          ? existingUserEntry.camera
+          : existingPayload.camera;
+
+    const nextMicGranted: boolean =
+      permissions.micGranted !== undefined
+        ? permissions.micGranted
+        : existingUserEntry?.micGranted !== undefined
+          ? existingUserEntry.micGranted
+          : (existingPayload.micGranted ?? permissions.mic ?? false);
+
+    const nextCameraGranted: boolean =
+      permissions.cameraGranted !== undefined
+        ? permissions.cameraGranted
+        : existingUserEntry?.cameraGranted !== undefined
+          ? existingUserEntry.cameraGranted
+          : (existingPayload.cameraGranted ?? permissions.camera ?? false);
+
+    const updatedEntry: StudioMediaPermissions = {
+      mic: nextMic,
+      camera: nextCamera,
+      micGranted: nextMicGranted,
+      cameraGranted: nextCameraGranted,
+    };
+
+    users[normKey] = updatedEntry;
+    if (userKey && userKey !== normKey) {
+      users[userKey] = updatedEntry;
+    }
+    // Isolate user permissions: Do NOT overwrite top-level device grant with a specific user's preferences
+  } else {
+    // Device-level / anonymous permissions
+    rootMic = permissions.mic !== undefined ? permissions.mic : existingPayload.mic;
+    rootCamera = permissions.camera !== undefined ? permissions.camera : existingPayload.camera;
+    rootMicGranted =
+      permissions.micGranted !== undefined
+        ? permissions.micGranted
+        : (existingPayload.micGranted ?? permissions.mic ?? false);
+    rootCameraGranted =
+      permissions.cameraGranted !== undefined
+        ? permissions.cameraGranted
+        : (existingPayload.cameraGranted ?? permissions.camera ?? false);
+  }
+
+  const payload: StudioPermissionsCookiePayload = {
+    mic: rootMic,
+    camera: rootCamera,
+    micGranted: rootMicGranted,
+    cameraGranted: rootCameraGranted,
+    users,
+  };
+
+  setCookie(COOKIE_STUDIO_PERMISSIONS_NAME, JSON.stringify(payload), maxAgeSeconds);
+}
+
+export function clearStudioPermissionsCookie(): void {
+  deleteCookie(COOKIE_STUDIO_PERMISSIONS_NAME);
+}
+
 export function clearPreferenceCookies(): void {
   deleteCookie(COOKIE_CONSENT_NAME);
   deleteCookie(COOKIE_THEME_NAME);
   deleteCookie(COOKIE_REMEMBER_NAME);
+  deleteCookie(COOKIE_STUDIO_PERMISSIONS_NAME);
 }
 
 export function hasStoredSession(): boolean {

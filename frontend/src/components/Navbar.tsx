@@ -30,6 +30,7 @@ interface NavbarProps {
   searchResults?: DirectorySearchResult;
   onSelectUser?: (user: DirectoryUserMatch) => void;
   onToggleSidebar?: () => void;
+  onSignOut?: () => void;
 }
 
 const EMPTY_SEARCH_RESULTS: DirectorySearchResult = {
@@ -46,6 +47,7 @@ export function Navbar({
   searchResults = EMPTY_SEARCH_RESULTS,
   onSelectUser,
   onToggleSidebar,
+  onSignOut,
 }: NavbarProps) {
   const { user, signOut } = useAuth();
   const [searchOpen, setSearchOpen] = useState(false);
@@ -385,8 +387,12 @@ export function Navbar({
                 type="button"
                 aria-label="Sign out"
                 onClick={() => {
-                  void signOut();
-                  onNavigate({ page: "home" });
+                  if (onSignOut) {
+                    onSignOut();
+                  } else {
+                    void signOut();
+                    onNavigate({ page: "home" });
+                  }
                 }}
                 className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-[var(--vs-live)]/30 bg-[var(--vs-live)]/10 px-2.5 text-xs font-medium whitespace-nowrap text-[var(--vs-live)] transition-colors hover:border-[var(--vs-live)]/50 hover:bg-[var(--vs-live)]/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--vs-accent)]"
               >
